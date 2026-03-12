@@ -1,0 +1,10 @@
+{
+  "id": "hierarchy-view",
+  "name": "Hierarchy View",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Manage a user-defined note tree stored in a SQLite database and create notes from a sidebar tree view.",
+  "author": "OpenAI",
+  "authorUrl": "https://openai.com",
+  "isDesktopOnly": true
+}

@@ -1,0 +1,30 @@
+{
+  "name": "obsidian-tree-hierarchy",
+  "version": "0.1.0",
+  "description": "Obsidian plugin that stores a user-defined note hierarchy in a SQLite database.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "sqlite",
+    "notes",
+    "tree"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.17.24",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.25.1",
+    "obsidian": "^1.7.2",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "sql.js": "^1.13.0"
+  }
+}
