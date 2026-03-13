@@ -37,10 +37,14 @@
 }
 
 .tree-hierarchy-node {
-  margin-left: 14px;
+  margin-left: 0;
   padding-left: 12px;
   border-left: 1px solid var(--background-modifier-border);
   position: relative;
+}
+
+.tree-hierarchy-node-children {
+  margin-left: 14px;
 }
 
 .tree-hierarchy-node-header {

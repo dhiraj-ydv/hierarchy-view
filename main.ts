@@ -981,8 +981,9 @@ class TreeHierarchyPopupModal extends Modal {
 
 		const collapseKey = node.dbId ?? this.hashNodeKey(node.key);
 		if (node.children.length > 0 && !this.collapsed.has(collapseKey)) {
+			const childrenEl = nodeEl.createDiv({ cls: "tree-hierarchy-node-children" });
 			for (const child of node.children) {
-				this.renderNode(nodeEl, child);
+				this.renderNode(childrenEl, child);
 			}
 		}
 		const afterDropZone = nodeEl.createDiv({ cls: "tree-hierarchy-insert-zone" });
@@ -1349,8 +1350,9 @@ class TreeHierarchyView extends ItemView {
 
 		const collapseKey = node.dbId ?? this.hashNodeKey(node.key);
 		if (node.children.length > 0 && !this.collapsed.has(collapseKey)) {
+			const childrenEl = nodeEl.createDiv({ cls: "tree-hierarchy-node-children" });
 			for (const child of node.children) {
-				this.renderNode(nodeEl, child);
+				this.renderNode(childrenEl, child);
 			}
 		}
 		const afterDropZone = nodeEl.createDiv({ cls: "tree-hierarchy-insert-zone" });
