@@ -11,12 +11,14 @@
     "importHelpers": true,
     "isolatedModules": true,
     "strict": true,
+    "skipLibCheck": true,
     "lib": [
       "DOM",
       "ES2020"
     ]
   },
   "include": [
-    "**/*.ts"
+    "**/*.ts",
+    "**/*.d.ts"
   ]
 }
