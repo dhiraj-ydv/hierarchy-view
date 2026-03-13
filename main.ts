@@ -1,6 +1,7 @@
 import {
 	App,
 	ItemView,
+	Menu,
 	Modal,
 	Notice,
 	normalizePath,
@@ -45,11 +46,13 @@ interface SqlJsModule {
 interface TreeHierarchySettings {
 	dbFileName: string;
 	backupDbPath: string;
+	restoreBackupFilePath: string;
 	noteRootFolder: string;
 }
 
 interface RecoveryState {
 	backupDbPath: string;
+	restoreBackupFilePath: string;
 }
 
 interface TreeNodeRecord {
@@ -76,6 +79,7 @@ interface DisplayTreeNode {
 const DEFAULT_SETTINGS: TreeHierarchySettings = {
 	dbFileName: DEFAULT_DB_FILENAME,
 	backupDbPath: "",
+	restoreBackupFilePath: "",
 	noteRootFolder: "",
 };
 
@@ -161,13 +165,11 @@ class TreeHierarchyStore {
 			return;
 		}
 
-		const exported = this.db.export();
-		const fileData = new Uint8Array(exported);
 		const adapter = this.plugin.app.vault.adapter as typeof this.plugin.app.vault.adapter & {
 			writeBinary(path: string, data: ArrayBuffer): Promise<void>;
 		};
+		const fileData = this.exportDatabaseBytes();
 		await adapter.writeBinary(this.plugin.getDatabasePath(), toArrayBuffer(fileData));
-		await this.plugin.writeBackupDatabase(fileData);
 	}
 
 	private async ensureDbDirectory(
@@ -200,6 +202,13 @@ class TreeHierarchyStore {
 
 		await adapter.writeBinary(primaryPath, toArrayBuffer(backupBytes));
 		new Notice("Hierarchy view restored its database from the backup location.");
+	}
+
+	exportDatabaseBytes(): Uint8Array {
+		if (!this.db) {
+			throw new Error("Database is not initialized.");
+		}
+		return new Uint8Array(this.db.export());
 	}
 
 	getTree(): TreeNodeRecord[] {
@@ -247,14 +256,16 @@ class TreeHierarchyStore {
 		return roots;
 	}
 
-	async createGroup(title: string, parentId: number | null): Promise<void> {
-		this.runInsert("group", title, parentId, null);
+	async createGroup(title: string, parentId: number | null): Promise<number> {
+		const createdId = this.runInsert("group", title, parentId, null);
 		await this.save();
+		return createdId;
 	}
 
-	async createNoteNode(title: string, parentId: number | null, notePath: string): Promise<void> {
-		this.runInsert("note", title, parentId, notePath);
+	async createNoteNode(title: string, parentId: number | null, notePath: string): Promise<number> {
+		const createdId = this.runInsert("note", title, parentId, notePath);
 		await this.save();
+		return createdId;
 	}
 
 	async assignExistingNote(title: string, parentId: number | null, notePath: string): Promise<void> {
@@ -377,13 +388,18 @@ class TreeHierarchyStore {
 		return targets;
 	}
 
-	private runInsert(type: NodeType, title: string, parentId: number | null, notePath: string | null): void {
+	private runInsert(type: NodeType, title: string, parentId: number | null, notePath: string | null): number {
 		const sortOrder = this.getNextSortOrder(parentId);
 		this.db?.run(
 			`INSERT INTO nodes(parent_id, type, title, note_path, sort_order, updated_at)
 			 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
 			[parentId, type, title, notePath, sortOrder],
 		);
+		const inserted = this.db?.exec("SELECT last_insert_rowid();") ?? [];
+		if (inserted.length === 0 || inserted[0].values.length === 0) {
+			throw new Error("Failed to read inserted node id.");
+		}
+		return Number(inserted[0].values[0][0]);
 	}
 
 	private findNoteNodeIdByPath(notePath: string): number | null {
@@ -692,6 +708,71 @@ class MoveHierarchyNodeModal extends Modal {
 	}
 }
 
+class CreateParentHierarchyItemModal extends Modal {
+	private readonly type: NodeType;
+	private readonly targetNode: DisplayTreeNode;
+	private readonly plugin: SQLiteTreeHierarchyPlugin;
+
+	constructor(app: App, plugin: SQLiteTreeHierarchyPlugin, type: NodeType, targetNode: DisplayTreeNode) {
+		super(app);
+		this.plugin = plugin;
+		this.type = type;
+		this.targetNode = targetNode;
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass("tree-hierarchy-modal");
+
+		this.titleEl.setText(this.type === "group" ? "Create parent group" : "Create parent note");
+
+		let title = "";
+		const titleLabel = contentEl.createEl("label", {
+			text: this.type === "group" ? "Parent group name" : "Parent note title",
+		});
+		const titleInput = titleLabel.createEl("input", { type: "text" });
+		titleInput.focus();
+		titleInput.addEventListener("input", () => {
+			title = titleInput.value.trim();
+		});
+
+		let folder = this.plugin.settings.noteRootFolder.trim();
+		if (this.type === "note") {
+			const folderLabel = contentEl.createEl("label", { text: "Vault folder" });
+			const folderInput = folderLabel.createEl("input", { type: "text", value: folder });
+			folderInput.addEventListener("input", () => {
+				folder = folderInput.value.trim();
+			});
+		}
+
+		const createButton = contentEl.createEl("button", {
+			text: this.type === "group" ? "Create parent group" : "Create parent note",
+		});
+		createButton.addEventListener("click", () => {
+			fireAndForget(this.handleCreate(title, folder), (error) => {
+				console.error(error);
+				new Notice(error instanceof Error ? error.message : "Failed to create parent item.");
+			});
+		});
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+
+	private async handleCreate(title: string, folder: string): Promise<void> {
+		if (!title) {
+			new Notice("Title is required.");
+			return;
+		}
+
+		await this.plugin.createParentForNode(this.targetNode, this.type, title, folder);
+		this.close();
+		await this.plugin.refreshTreeView();
+	}
+}
+
 class TreeHierarchyPopupModal extends Modal {
 	private collapsed = new Set<number>();
 	private draggedNodeKey: string | null = null;
@@ -825,6 +906,10 @@ class TreeHierarchyPopupModal extends Modal {
 		label.addEventListener("click", () => {
 			fireAndForget(this.openNodeFile(node));
 		});
+		header.addEventListener("contextmenu", (event) => {
+			event.preventDefault();
+			this.openNodeContextMenu(event, node);
+		});
 
 		const actions = header.createDiv({ cls: "tree-hierarchy-node-actions" });
 		if (node.dbId !== null || (node.type === "note" && node.notePath)) {
@@ -856,17 +941,26 @@ class TreeHierarchyPopupModal extends Modal {
 			});
 			const addGroup = actions.createEl("button", { text: "+G" });
 			addGroup.addEventListener("click", () => {
-				void this.plugin.openCreateModalForNode("group", node);
+				fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+					console.error(error);
+					new Notice("Failed to open create group dialog.");
+				});
 			});
 
 			const addNote = actions.createEl("button", { text: "+N" });
 			addNote.addEventListener("click", () => {
-				void this.plugin.openCreateModalForNode("note", node);
+				fireAndForget(this.plugin.openCreateModalForNode("note", node), (error) => {
+					console.error(error);
+					new Notice("Failed to open create note dialog.");
+				});
 			});
 
 			const addExisting = actions.createEl("button", { text: "+E" });
 			addExisting.addEventListener("click", () => {
-				void this.plugin.openAssignExistingModalForNode(node);
+				fireAndForget(this.plugin.openAssignExistingModalForNode(node), (error) => {
+					console.error(error);
+					new Notice("Failed to open add existing note dialog.");
+				});
 			});
 
 			if (node.dbId !== null) {
@@ -978,7 +1072,7 @@ class TreeHierarchyPopupModal extends Modal {
 
 		try {
 			await this.plugin.moveDisplayNode(draggedNode, parentId);
-			await this.render();
+			this.render();
 		} catch (error) {
 			console.error(error);
 			new Notice(error instanceof Error ? error.message : "Failed to move node.");
@@ -1002,7 +1096,7 @@ class TreeHierarchyPopupModal extends Modal {
 			}
 			const targetIndex = position === "before" ? location.index : location.index + 1;
 			await this.plugin.moveDisplayNodeToIndex(draggedNode, location.parentId, targetIndex);
-			await this.render();
+			this.render();
 		} catch (error) {
 			console.error(error);
 			new Notice(error instanceof Error ? error.message : "Failed to reorder node.");
@@ -1050,6 +1144,21 @@ class TreeHierarchyPopupModal extends Modal {
 	private async moveNodeToRoot(nodeId: number): Promise<void> {
 		await this.plugin.store.moveNode(nodeId, null);
 		await this.plugin.refreshTreeView();
+	}
+
+	private openNodeContextMenu(event: MouseEvent, node: DisplayTreeNode): void {
+		const menu = Menu.forEvent(event);
+		menu.addItem((item) => {
+			item.setTitle("Create parent group").onClick(() => {
+				new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
+			});
+		});
+		menu.addItem((item) => {
+			item.setTitle("Create parent note").onClick(() => {
+				new CreateParentHierarchyItemModal(this.app, this.plugin, "note", node).open();
+			});
+		});
+		menu.showAtMouseEvent(event);
 	}
 }
 
@@ -1163,6 +1272,10 @@ class TreeHierarchyView extends ItemView {
 		label.addEventListener("click", () => {
 			fireAndForget(this.openNodeFile(node));
 		});
+		header.addEventListener("contextmenu", (event) => {
+			event.preventDefault();
+			this.openNodeContextMenu(event, node);
+		});
 
 		const actions = header.createDiv({ cls: "tree-hierarchy-node-actions" });
 		if (node.dbId !== null || (node.type === "note" && node.notePath)) {
@@ -1194,17 +1307,26 @@ class TreeHierarchyView extends ItemView {
 			});
 			const addGroup = actions.createEl("button", { text: "+G" });
 			addGroup.addEventListener("click", () => {
-				void this.plugin.openCreateModalForNode("group", node);
+				fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+					console.error(error);
+					new Notice("Failed to open create group dialog.");
+				});
 			});
 
 			const addNote = actions.createEl("button", { text: "+N" });
 			addNote.addEventListener("click", () => {
-				void this.plugin.openCreateModalForNode("note", node);
+				fireAndForget(this.plugin.openCreateModalForNode("note", node), (error) => {
+					console.error(error);
+					new Notice("Failed to open create note dialog.");
+				});
 			});
 
 			const addExisting = actions.createEl("button", { text: "+E" });
 			addExisting.addEventListener("click", () => {
-				void this.plugin.openAssignExistingModalForNode(node);
+				fireAndForget(this.plugin.openAssignExistingModalForNode(node), (error) => {
+					console.error(error);
+					new Notice("Failed to open add existing note dialog.");
+				});
 			});
 
 			if (node.dbId !== null) {
@@ -1397,6 +1519,21 @@ class TreeHierarchyView extends ItemView {
 		await this.plugin.store.moveNode(nodeId, null);
 		await this.plugin.refreshTreeView();
 	}
+
+	private openNodeContextMenu(event: MouseEvent, node: DisplayTreeNode): void {
+		const menu = Menu.forEvent(event);
+		menu.addItem((item) => {
+			item.setTitle("Create parent group").onClick(() => {
+				new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
+			});
+		});
+		menu.addItem((item) => {
+			item.setTitle("Create parent note").onClick(() => {
+				new CreateParentHierarchyItemModal(this.app, this.plugin, "note", node).open();
+			});
+		});
+		menu.showAtMouseEvent(event);
+	}
 }
 
 class TreeHierarchySettingTab extends PluginSettingTab {
@@ -1424,34 +1561,27 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Backup database path")
-			.setDesc("Optional backup copy path for reinstall recovery. Supports absolute paths or vault-relative paths.")
-			.addText((text) =>
-				text
-					.setPlaceholder("C:\\Backups\\hierarchy-view.sqlite")
-					.setValue(this.plugin.settings.backupDbPath)
-					.onChange((value) => {
-						fireAndForget(this.plugin.updateBackupDbPath(value), (error) => {
-							console.error(error);
-							new Notice("Failed to save backup database path.");
-						});
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Backup actions")
-			.setDesc("Create a backup copy now or restore the primary plugin database from the configured backup.")
+			.setName("Backup database")
+			.setDesc(this.plugin.settings.backupDbPath || "No backup location selected.")
 			.addButton((button) =>
-				button.setButtonText("Back up now").onClick(() => {
+				button.setButtonText("Set location").onClick(() => {
+					fireAndForget(this.handleBackupBrowse(button.buttonEl));
+				}),
+			)
+			.addButton((button) =>
+				button.setButtonText("Back up").onClick(() => {
 					fireAndForget(this.plugin.backupNow(), (error) => {
 						console.error(error);
 						new Notice(error instanceof Error ? error.message : "Failed to create backup.");
 					});
 				}),
-			)
+			);
+
+		new Setting(containerEl)
+			.setName("Restore database")
 			.addButton((button) =>
-				button.setButtonText("Restore now").onClick(() => {
-					fireAndForget(this.plugin.restoreFromBackupNow(), (error) => {
+				button.setButtonText("Restore").onClick(() => {
+					fireAndForget(this.handleRestoreBrowse(button.buttonEl), (error) => {
 						console.error(error);
 						new Notice(error instanceof Error ? error.message : "Failed to restore backup.");
 					});
@@ -1473,6 +1603,26 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 					}),
 			);
 	}
+
+	private async handleBackupBrowse(buttonEl: HTMLButtonElement): Promise<void> {
+		buttonEl.blur();
+		const pickedPath = await this.plugin.pickBackupPath();
+		if (!pickedPath) {
+			return;
+		}
+		await this.plugin.updateBackupDbPath(pickedPath);
+		this.display();
+	}
+
+	private async handleRestoreBrowse(buttonEl: HTMLButtonElement): Promise<void> {
+		buttonEl.blur();
+		const pickedPath = await this.plugin.pickRestoreFilePath();
+		if (!pickedPath) {
+			return;
+		}
+		await this.plugin.updateRestoreBackupFilePath(pickedPath);
+		await this.plugin.restoreFromBackupNow();
+	}
 }
 
 export default class SQLiteTreeHierarchyPlugin extends Plugin {
@@ -1492,7 +1642,9 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		});
 
 		this.app.workspace.onLayoutReady(() => {
-			void this.ensureSidebarTab();
+			fireAndForget(this.ensureSidebarTab(), (error) => {
+				console.error(error);
+			});
 		});
 
 		this.addCommand({
@@ -1547,7 +1699,6 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 	onunload(): void {
 		this.popupModal?.close();
 		this.popupModal = null;
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_TREE_HIERARCHY);
 	}
 
 	async loadSettings(): Promise<void> {
@@ -1557,12 +1708,16 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		if (!this.settings.backupDbPath && recoveryState.backupDbPath) {
 			this.settings.backupDbPath = recoveryState.backupDbPath;
 		}
+		if (!this.settings.restoreBackupFilePath && recoveryState.restoreBackupFilePath) {
+			this.settings.restoreBackupFilePath = recoveryState.restoreBackupFilePath;
+		}
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 		await this.writeRecoveryState({
 			backupDbPath: this.settings.backupDbPath,
+			restoreBackupFilePath: this.settings.restoreBackupFilePath,
 		});
 	}
 
@@ -1625,7 +1780,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 	}
 
-	async createNoteInHierarchy(title: string, parentId: number | null, folder: string): Promise<void> {
+	async createNoteInHierarchy(title: string, parentId: number | null, folder: string): Promise<number> {
 		const normalizedFolder = folder.replace(/^\/+|\/+$/g, "");
 		if (normalizedFolder) {
 			await this.ensureFolderExists(normalizedFolder);
@@ -1635,8 +1790,39 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		const notePath = normalizedFolder ? `${normalizedFolder}/${safeTitle}.md` : `${safeTitle}.md`;
 		const uniquePath = this.getAvailableNotePath(notePath);
 		const file = await this.app.vault.create(uniquePath, `# ${title}\n`);
-		await this.store.createNoteNode(title, parentId, file.path);
+		const createdId = await this.store.createNoteNode(title, parentId, file.path);
 		await this.app.workspace.getLeaf(true).openFile(file);
+		return createdId;
+	}
+
+	async createParentForNode(
+		targetNode: DisplayTreeNode,
+		type: NodeType,
+		title: string,
+		folder: string,
+	): Promise<void> {
+		const location = this.findNodeLocation(targetNode.key);
+		if (!location) {
+			throw new Error("Could not determine the target node location.");
+		}
+
+		const targetNodeId = await this.resolveNodeIdForDisplayNode(targetNode);
+		if (targetNodeId === null) {
+			throw new Error("Could not resolve the target node.");
+		}
+
+		const newParentId =
+			type === "group"
+				? await this.store.createGroup(title, location.parentId)
+				: await this.createNoteInHierarchy(title, location.parentId, folder);
+
+		const refreshedLocation = this.findNodeLocation(targetNode.key);
+		if (!refreshedLocation) {
+			throw new Error("Could not refresh the target node location.");
+		}
+
+		await this.store.moveNodeToIndex(newParentId, refreshedLocation.parentId, refreshedLocation.index);
+		await this.store.moveNodeToIndex(targetNodeId, newParentId, 0);
 	}
 
 	private async ensureFolderExists(path: string): Promise<void> {
@@ -1706,6 +1892,15 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		return walk(this.getDisplayTree(), null);
 	}
 
+	getDisplaySiblings(parentId: number | null): DisplayTreeNode[] {
+		if (parentId === null) {
+			return this.getDisplayTree();
+		}
+
+		const parentNode = this.findDisplayNodeByKey(`db:${parentId}`);
+		return parentNode?.children ?? [];
+	}
+
 	getRootAttachableNotes(): TFile[] {
 		const rootNotes = this.getDisplayTree().filter((node) => node.type === "note" && node.parentId === null && node.notePath);
 		return rootNotes
@@ -1739,6 +1934,20 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			return this.store.ensureTrackedNote(file.basename, file.path);
 		}
 
+		return null;
+	}
+
+	async resolveNodeIdForDisplayNode(node: DisplayTreeNode): Promise<number | null> {
+		if (node.dbId !== null) {
+			return node.dbId;
+		}
+		if (node.type === "note" && node.notePath) {
+			const file = this.app.vault.getAbstractFileByPath(node.notePath);
+			if (!(file instanceof TFile)) {
+				throw new Error("Note file no longer exists.");
+			}
+			return this.store.ensureTrackedNote(file.path, file.path);
+		}
 		return null;
 	}
 
@@ -1815,9 +2024,27 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 	async updateBackupDbPath(value: string): Promise<void> {
 		this.settings.backupDbPath = value.trim();
 		await this.saveSettings();
-		if (this.settings.backupDbPath) {
-			await this.backupNow();
-		}
+	}
+
+	async updateRestoreBackupFilePath(value: string): Promise<void> {
+		this.settings.restoreBackupFilePath = value.trim();
+		await this.saveSettings();
+	}
+
+	async pickBackupPath(): Promise<string | null> {
+		const pickedPath = await this.showSystemPathPicker({
+			type: "directory",
+			title: "Choose backup directory",
+		});
+		return pickedPath;
+	}
+
+	async pickRestoreFilePath(): Promise<string | null> {
+		const pickedPath = await this.showSystemPathPicker({
+			type: "file",
+			title: "Choose backup file to restore",
+		});
+		return pickedPath;
 	}
 
 	async updateNoteRootFolder(value: string): Promise<void> {
@@ -1828,16 +2055,16 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 	async backupNow(): Promise<void> {
 		await this.whenReady();
 		await this.store.syncVaultNotes();
-		await this.store.save();
 		if (!this.settings.backupDbPath.trim()) {
 			throw new Error("Set a backup database path first.");
 		}
+		await this.writeBackupDatabase(this.store.exportDatabaseBytes());
 		new Notice("Hierarchy view database backup updated.");
 	}
 
 	async restoreFromBackupNow(): Promise<void> {
 		await this.loadSettings();
-		const backupBytes = await this.readBackupDatabase();
+		const backupBytes = await this.readRestoreBackupFile();
 		if (!backupBytes) {
 			throw new Error("Backup database was not found.");
 		}
@@ -1851,6 +2078,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		if (!(await adapter.exists(primaryDir))) {
 			await adapter.mkdir(primaryDir);
 		}
+		// Restoring always replaces the current primary plugin database.
 		await adapter.writeBinary(this.getDatabasePath(), toArrayBuffer(backupBytes));
 		await this.reloadStore();
 		new Notice("Hierarchy view database restored from backup.");
@@ -1862,9 +2090,16 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			return;
 		}
 
-		const resolvedPath = await this.resolveBackupFilePath(backupPath);
-		await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
-		await fs.writeFile(resolvedPath, data);
+		const target = await this.resolveBackupTarget(backupPath);
+		if (target.type === "directory") {
+			await fs.mkdir(target.path, { recursive: true });
+			const backupFilePath = path.join(target.path, this.createBackupFileName());
+			await fs.writeFile(backupFilePath, data);
+			return;
+		}
+
+		await fs.mkdir(path.dirname(target.path), { recursive: true });
+		await fs.writeFile(target.path, data);
 	}
 
 	async readBackupDatabase(): Promise<Uint8Array | null> {
@@ -1873,7 +2108,14 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			return null;
 		}
 
-		const resolvedPath = await this.resolveBackupFilePath(backupPath);
+		const target = await this.resolveBackupTarget(backupPath);
+		const resolvedPath =
+			target.type === "directory"
+				? await this.findLatestBackupFile(target.path)
+				: target.path;
+		if (!resolvedPath) {
+			return null;
+		}
 		try {
 			const data = await fs.readFile(resolvedPath);
 			return new Uint8Array(data);
@@ -1882,19 +2124,38 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 	}
 
-	private async resolveBackupFilePath(configuredPath: string): Promise<string> {
+	async readRestoreBackupFile(): Promise<Uint8Array | null> {
+		const restorePath = this.settings.restoreBackupFilePath.trim();
+		if (!restorePath) {
+			return null;
+		}
+
+		if (this.looksLikeDirectoryPath(restorePath)) {
+			throw new Error("Restore backup file must be a SQLite file path, not a directory.");
+		}
+
+		const resolvedPath = this.resolveConfiguredBackupPath(restorePath);
+		try {
+			const data = await fs.readFile(resolvedPath);
+			return new Uint8Array(data);
+		} catch {
+			return null;
+		}
+	}
+
+	private async resolveBackupTarget(configuredPath: string): Promise<{ type: "directory" | "file"; path: string }> {
 		const resolvedPath = this.resolveConfiguredBackupPath(configuredPath);
 		const pathInfo = await this.getPathInfo(resolvedPath);
 		if (pathInfo?.isDirectory) {
-			return path.join(resolvedPath, DEFAULT_DB_FILENAME);
+			return { type: "directory", path: resolvedPath };
 		}
 		if (pathInfo?.exists) {
-			return resolvedPath;
+			return { type: "file", path: resolvedPath };
 		}
 		if (this.looksLikeDirectoryPath(configuredPath)) {
-			return path.join(resolvedPath, DEFAULT_DB_FILENAME);
+			return { type: "directory", path: resolvedPath };
 		}
-		return resolvedPath;
+		return { type: "file", path: resolvedPath };
 	}
 
 	private resolveConfiguredBackupPath(configuredPath: string): string {
@@ -1928,6 +2189,55 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 	}
 
+	private createBackupFileName(): string {
+		const now = new Date();
+		const datePart = [
+			String(now.getDate()).padStart(2, "0"),
+			String(now.getMonth() + 1).padStart(2, "0"),
+			String(now.getFullYear()),
+		].join("");
+		const timePart = [
+			String(now.getHours()).padStart(2, "0"),
+			String(now.getMinutes()).padStart(2, "0"),
+			String(now.getSeconds()).padStart(2, "0"),
+		].join("");
+		const vaultName = this.getSanitizedVaultName();
+		return `hv_${vaultName}_${datePart}_${timePart}.sqlite`;
+	}
+
+	private getSanitizedVaultName(): string {
+		const vaultName = this.app.vault.getName().trim() || "vault";
+		const safeName = vaultName
+			.toLowerCase()
+			.replace(/[^a-z0-9._-]+/g, "-")
+			.replace(/-+/g, "-")
+			.replace(/^-|-$/g, "");
+		return safeName || "vault";
+	}
+
+	private async findLatestBackupFile(directoryPath: string): Promise<string | null> {
+		try {
+			const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+			const backupFiles = entries
+				.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".sqlite"))
+				.map((entry) => path.join(directoryPath, entry.name));
+			if (backupFiles.length === 0) {
+				return null;
+			}
+
+			const filesWithStats = await Promise.all(
+				backupFiles.map(async (filePath) => ({
+					filePath,
+					stat: await fs.stat(filePath),
+				})),
+			);
+			filesWithStats.sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs);
+			return filesWithStats[0].filePath;
+		} catch {
+			return null;
+		}
+	}
+
 	private getVaultBasePath(): string {
 		const adapter = this.app.vault.adapter as typeof this.app.vault.adapter & {
 			getBasePath?: () => string;
@@ -1950,10 +2260,13 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			const parsed = JSON.parse(raw) as Partial<RecoveryState>;
 			return {
 				backupDbPath: typeof parsed.backupDbPath === "string" ? parsed.backupDbPath : "",
+				restoreBackupFilePath:
+					typeof parsed.restoreBackupFilePath === "string" ? parsed.restoreBackupFilePath : "",
 			};
 		} catch {
 			return {
 				backupDbPath: "",
+				restoreBackupFilePath: "",
 			};
 		}
 	}
@@ -1966,5 +2279,119 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 
 	private getRecoveryStatePath(): string {
 		return path.join(this.getVaultBasePath(), this.app.vault.configDir, `${this.manifest.id}-recovery.json`);
+	}
+
+	private async showSystemPathPicker(options: {
+		type: "directory" | "file";
+		title: string;
+	}): Promise<string | null> {
+		const electronDialogPath = await this.pickPathWithElectron(options);
+		if (electronDialogPath) {
+			return electronDialogPath;
+		}
+		return this.pickPathWithHtmlInput(options);
+	}
+
+	private async pickPathWithElectron(options: {
+		type: "directory" | "file";
+		title: string;
+	}): Promise<string | null> {
+		try {
+			const win = window as Window & {
+				require?: (moduleName: string) => {
+					dialog?: {
+						showOpenDialog: (dialogOptions: {
+							title: string;
+							properties: string[];
+							filters?: Array<{ name: string; extensions: string[] }>;
+						}) => Promise<{ canceled: boolean; filePaths: string[] }>;
+					};
+					remote?: {
+						dialog?: {
+							showOpenDialog: (dialogOptions: {
+								title: string;
+								properties: string[];
+								filters?: Array<{ name: string; extensions: string[] }>;
+							}) => Promise<{ canceled: boolean; filePaths: string[] }>;
+						};
+					};
+				};
+			};
+			const electron = win.require?.("electron");
+			const dialog = electron?.remote?.dialog ?? electron?.dialog;
+			if (!dialog?.showOpenDialog) {
+				return null;
+			}
+
+			const result = await dialog.showOpenDialog({
+				title: options.title,
+				properties:
+					options.type === "directory"
+						? ["openDirectory", "createDirectory"]
+						: ["openFile"],
+				filters:
+					options.type === "file"
+						? [{ name: "SQLite", extensions: ["sqlite", "db"] }]
+						: undefined,
+			});
+			if (result.canceled || result.filePaths.length === 0) {
+				return null;
+			}
+			return result.filePaths[0];
+		} catch {
+			return null;
+		}
+	}
+
+	private async pickPathWithHtmlInput(options: {
+		type: "directory" | "file";
+		title: string;
+	}): Promise<string | null> {
+		return new Promise((resolve) => {
+			const input = document.createElement("input");
+			input.type = "file";
+			input.style.display = "none";
+			if (options.type === "directory") {
+				input.setAttribute("webkitdirectory", "");
+			} else {
+				input.accept = ".sqlite,.db";
+			}
+
+			const cleanup = (): void => {
+				input.remove();
+			};
+
+			input.addEventListener(
+				"change",
+				() => {
+					const files = input.files;
+					if (!files || files.length === 0) {
+						cleanup();
+						resolve(null);
+						return;
+					}
+
+					const file = files[0] as File & { path?: string; webkitRelativePath?: string };
+					if (options.type === "directory") {
+						const filePath = file.path;
+						const relativePath = file.webkitRelativePath;
+						if (filePath && relativePath) {
+							const normalizedRelativePath = relativePath.replace(/\//g, path.sep);
+							const directoryPath = filePath.slice(0, filePath.length - normalizedRelativePath.length);
+							cleanup();
+							resolve(directoryPath.replace(/[\\/]+$/, ""));
+							return;
+						}
+					}
+
+					cleanup();
+					resolve(file.path ?? null);
+				},
+				{ once: true },
+			);
+
+			document.body.appendChild(input);
+			input.click();
+		});
 	}
 }

@@ -42,8 +42,8 @@ Optional backup database:
 - you can configure a second backup SQLite path in plugin settings
 - the path can be absolute or vault-relative
 - you can give either a file path or a directory path
-- if you give a directory path, the plugin creates or reuses `tree-hierarchy.sqlite` inside it
-- the plugin updates that backup automatically after database saves
+- if you give a directory path, the plugin creates a new timestamped `.sqlite` backup file inside it on each backup
+- backups are created only when you click `Back up`
 
 Recovery state:
 
@@ -98,6 +98,7 @@ Common actions:
 - `+N`: create child note
 - `+E`: attach an existing note under that node
 - `Move`: move the node to another parent
+- right-click a node: create a parent group or parent note above that node
 
 Note-specific behavior:
 
@@ -148,19 +149,28 @@ Controls the SQLite filename inside:
 
 `<vault>/.obsidian/plugins/hierarchy-view/`
 
-### Backup database path
+### Backup database
 
-Optional second-copy path for reinstall recovery.
+Backup destination plus manual backup action.
 
 Behavior:
 
-- if set, the plugin writes a backup copy after database saves
-- if the primary plugin-folder database is missing on startup but the backup exists, the plugin restores the primary database from the backup automatically
+- current selected backup location is shown as text in settings
+- `Set location` opens the system picker for a backup directory
+- `Back up` writes a backup copy immediately
+- backups are created only when `Back up` is clicked
+- this path can be a file path or a directory path
+- if it is a directory path, each backup creates a new timestamped `.sqlite` file inside that directory
 
-### Backup actions
+### Restore database
 
-- `Back up now`: writes the current database to the configured backup path immediately
-- `Restore now`: restores the primary plugin database from the configured backup path
+Restore action from a specific selected backup file.
+
+Behavior:
+
+- `Restore` opens the system file picker
+- you choose the exact backup SQLite file to restore from
+- the selected restore file is used immediately and is not shown as a saved text field
 
 ### Notes root folder
 

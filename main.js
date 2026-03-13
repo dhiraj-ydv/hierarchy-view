@@ -2176,6 +2176,7 @@ var DEFAULT_DB_FILENAME = "tree-hierarchy.sqlite";
 var DEFAULT_SETTINGS = {
   dbFileName: DEFAULT_DB_FILENAME,
   backupDbPath: "",
+  restoreBackupFilePath: "",
   noteRootFolder: ""
 };
 function fireAndForget(task, onError) {
@@ -2246,11 +2247,9 @@ var TreeHierarchyStore = class {
     if (!this.db) {
       return;
     }
-    const exported = this.db.export();
-    const fileData = new Uint8Array(exported);
     const adapter = this.plugin.app.vault.adapter;
+    const fileData = this.exportDatabaseBytes();
     await adapter.writeBinary(this.plugin.getDatabasePath(), toArrayBuffer(fileData));
-    await this.plugin.writeBackupDatabase(fileData);
   }
   async ensureDbDirectory(adapter) {
     const dir = this.plugin.getDatabaseDirectory();
@@ -2269,6 +2268,12 @@ var TreeHierarchyStore = class {
     }
     await adapter.writeBinary(primaryPath, toArrayBuffer(backupBytes));
     new import_obsidian.Notice("Hierarchy view restored its database from the backup location.");
+  }
+  exportDatabaseBytes() {
+    if (!this.db) {
+      throw new Error("Database is not initialized.");
+    }
+    return new Uint8Array(this.db.export());
   }
   getTree() {
     const result = this.db?.exec(`
@@ -2309,12 +2314,14 @@ var TreeHierarchyStore = class {
     return roots;
   }
   async createGroup(title, parentId) {
-    this.runInsert("group", title, parentId, null);
+    const createdId = this.runInsert("group", title, parentId, null);
     await this.save();
+    return createdId;
   }
   async createNoteNode(title, parentId, notePath) {
-    this.runInsert("note", title, parentId, notePath);
+    const createdId = this.runInsert("note", title, parentId, notePath);
     await this.save();
+    return createdId;
   }
   async assignExistingNote(title, parentId, notePath) {
     const existingNodeId = this.findNoteNodeIdByPath(notePath);
@@ -2431,6 +2438,11 @@ var TreeHierarchyStore = class {
 			 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       [parentId, type, title, notePath, sortOrder]
     );
+    const inserted = this.db?.exec("SELECT last_insert_rowid();") ?? [];
+    if (inserted.length === 0 || inserted[0].values.length === 0) {
+      throw new Error("Failed to read inserted node id.");
+    }
+    return Number(inserted[0].values[0][0]);
   }
   findNoteNodeIdByPath(notePath) {
     if (!this.db) {
@@ -2694,6 +2706,58 @@ var MoveHierarchyNodeModal = class extends import_obsidian.Modal {
     await this.plugin.refreshTreeView();
   }
 };
+var CreateParentHierarchyItemModal = class extends import_obsidian.Modal {
+  constructor(app, plugin, type, targetNode) {
+    super(app);
+    this.plugin = plugin;
+    this.type = type;
+    this.targetNode = targetNode;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("tree-hierarchy-modal");
+    this.titleEl.setText(this.type === "group" ? "Create parent group" : "Create parent note");
+    let title = "";
+    const titleLabel = contentEl.createEl("label", {
+      text: this.type === "group" ? "Parent group name" : "Parent note title"
+    });
+    const titleInput = titleLabel.createEl("input", { type: "text" });
+    titleInput.focus();
+    titleInput.addEventListener("input", () => {
+      title = titleInput.value.trim();
+    });
+    let folder = this.plugin.settings.noteRootFolder.trim();
+    if (this.type === "note") {
+      const folderLabel = contentEl.createEl("label", { text: "Vault folder" });
+      const folderInput = folderLabel.createEl("input", { type: "text", value: folder });
+      folderInput.addEventListener("input", () => {
+        folder = folderInput.value.trim();
+      });
+    }
+    const createButton = contentEl.createEl("button", {
+      text: this.type === "group" ? "Create parent group" : "Create parent note"
+    });
+    createButton.addEventListener("click", () => {
+      fireAndForget(this.handleCreate(title, folder), (error) => {
+        console.error(error);
+        new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to create parent item.");
+      });
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+  async handleCreate(title, folder) {
+    if (!title) {
+      new import_obsidian.Notice("Title is required.");
+      return;
+    }
+    await this.plugin.createParentForNode(this.targetNode, this.type, title, folder);
+    this.close();
+    await this.plugin.refreshTreeView();
+  }
+};
 var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
   constructor(app, plugin) {
     super(app);
@@ -2812,6 +2876,10 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
     label.addEventListener("click", () => {
       fireAndForget(this.openNodeFile(node));
     });
+    header.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      this.openNodeContextMenu(event, node);
+    });
     const actions = header.createDiv({ cls: "tree-hierarchy-node-actions" });
     if (node.dbId !== null || node.type === "note" && node.notePath) {
       header.addClass("is-drop-target");
@@ -2842,15 +2910,24 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
       });
       const addGroup = actions.createEl("button", { text: "+G" });
       addGroup.addEventListener("click", () => {
-        void this.plugin.openCreateModalForNode("group", node);
+        fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+          console.error(error);
+          new import_obsidian.Notice("Failed to open create group dialog.");
+        });
       });
       const addNote = actions.createEl("button", { text: "+N" });
       addNote.addEventListener("click", () => {
-        void this.plugin.openCreateModalForNode("note", node);
+        fireAndForget(this.plugin.openCreateModalForNode("note", node), (error) => {
+          console.error(error);
+          new import_obsidian.Notice("Failed to open create note dialog.");
+        });
       });
       const addExisting = actions.createEl("button", { text: "+E" });
       addExisting.addEventListener("click", () => {
-        void this.plugin.openAssignExistingModalForNode(node);
+        fireAndForget(this.plugin.openAssignExistingModalForNode(node), (error) => {
+          console.error(error);
+          new import_obsidian.Notice("Failed to open add existing note dialog.");
+        });
       });
       if (node.dbId !== null) {
         const moveNode = actions.createEl("button", { text: "Move" });
@@ -2947,7 +3024,7 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
     }
     try {
       await this.plugin.moveDisplayNode(draggedNode, parentId);
-      await this.render();
+      this.render();
     } catch (error) {
       console.error(error);
       new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to move node.");
@@ -2967,7 +3044,7 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
       }
       const targetIndex = position === "before" ? location.index : location.index + 1;
       await this.plugin.moveDisplayNodeToIndex(draggedNode, location.parentId, targetIndex);
-      await this.render();
+      this.render();
     } catch (error) {
       console.error(error);
       new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to reorder node.");
@@ -3008,6 +3085,20 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
   async moveNodeToRoot(nodeId) {
     await this.plugin.store.moveNode(nodeId, null);
     await this.plugin.refreshTreeView();
+  }
+  openNodeContextMenu(event, node) {
+    const menu = import_obsidian.Menu.forEvent(event);
+    menu.addItem((item) => {
+      item.setTitle("Create parent group").onClick(() => {
+        new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
+      });
+    });
+    menu.addItem((item) => {
+      item.setTitle("Create parent note").onClick(() => {
+        new CreateParentHierarchyItemModal(this.app, this.plugin, "note", node).open();
+      });
+    });
+    menu.showAtMouseEvent(event);
   }
 };
 var TreeHierarchyView = class extends import_obsidian.ItemView {
@@ -3106,6 +3197,10 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     label.addEventListener("click", () => {
       fireAndForget(this.openNodeFile(node));
     });
+    header.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      this.openNodeContextMenu(event, node);
+    });
     const actions = header.createDiv({ cls: "tree-hierarchy-node-actions" });
     if (node.dbId !== null || node.type === "note" && node.notePath) {
       header.addClass("is-drop-target");
@@ -3136,15 +3231,24 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
       });
       const addGroup = actions.createEl("button", { text: "+G" });
       addGroup.addEventListener("click", () => {
-        void this.plugin.openCreateModalForNode("group", node);
+        fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+          console.error(error);
+          new import_obsidian.Notice("Failed to open create group dialog.");
+        });
       });
       const addNote = actions.createEl("button", { text: "+N" });
       addNote.addEventListener("click", () => {
-        void this.plugin.openCreateModalForNode("note", node);
+        fireAndForget(this.plugin.openCreateModalForNode("note", node), (error) => {
+          console.error(error);
+          new import_obsidian.Notice("Failed to open create note dialog.");
+        });
       });
       const addExisting = actions.createEl("button", { text: "+E" });
       addExisting.addEventListener("click", () => {
-        void this.plugin.openAssignExistingModalForNode(node);
+        fireAndForget(this.plugin.openAssignExistingModalForNode(node), (error) => {
+          console.error(error);
+          new import_obsidian.Notice("Failed to open add existing note dialog.");
+        });
       });
       if (node.dbId !== null) {
         const moveNode = actions.createEl("button", { text: "Move" });
@@ -3310,6 +3414,20 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     await this.plugin.store.moveNode(nodeId, null);
     await this.plugin.refreshTreeView();
   }
+  openNodeContextMenu(event, node) {
+    const menu = import_obsidian.Menu.forEvent(event);
+    menu.addItem((item) => {
+      item.setTitle("Create parent group").onClick(() => {
+        new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
+      });
+    });
+    menu.addItem((item) => {
+      item.setTitle("Create parent note").onClick(() => {
+        new CreateParentHierarchyItemModal(this.app, this.plugin, "note", node).open();
+      });
+    });
+    menu.showAtMouseEvent(event);
+  }
 };
 var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -3327,24 +3445,21 @@ var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
         });
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Backup database path").setDesc("Optional backup copy path for reinstall recovery. Supports absolute paths or vault-relative paths.").addText(
-      (text) => text.setPlaceholder("C:\\Backups\\hierarchy-view.sqlite").setValue(this.plugin.settings.backupDbPath).onChange((value) => {
-        fireAndForget(this.plugin.updateBackupDbPath(value), (error) => {
-          console.error(error);
-          new import_obsidian.Notice("Failed to save backup database path.");
-        });
+    new import_obsidian.Setting(containerEl).setName("Backup database").setDesc(this.plugin.settings.backupDbPath || "No backup location selected.").addButton(
+      (button) => button.setButtonText("Set location").onClick(() => {
+        fireAndForget(this.handleBackupBrowse(button.buttonEl));
       })
-    );
-    new import_obsidian.Setting(containerEl).setName("Backup actions").setDesc("Create a backup copy now or restore the primary plugin database from the configured backup.").addButton(
-      (button) => button.setButtonText("Back up now").onClick(() => {
+    ).addButton(
+      (button) => button.setButtonText("Back up").onClick(() => {
         fireAndForget(this.plugin.backupNow(), (error) => {
           console.error(error);
           new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to create backup.");
         });
       })
-    ).addButton(
-      (button) => button.setButtonText("Restore now").onClick(() => {
-        fireAndForget(this.plugin.restoreFromBackupNow(), (error) => {
+    );
+    new import_obsidian.Setting(containerEl).setName("Restore database").addButton(
+      (button) => button.setButtonText("Restore").onClick(() => {
+        fireAndForget(this.handleRestoreBrowse(button.buttonEl), (error) => {
           console.error(error);
           new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to restore backup.");
         });
@@ -3358,6 +3473,24 @@ var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
         });
       })
     );
+  }
+  async handleBackupBrowse(buttonEl) {
+    buttonEl.blur();
+    const pickedPath = await this.plugin.pickBackupPath();
+    if (!pickedPath) {
+      return;
+    }
+    await this.plugin.updateBackupDbPath(pickedPath);
+    this.display();
+  }
+  async handleRestoreBrowse(buttonEl) {
+    buttonEl.blur();
+    const pickedPath = await this.plugin.pickRestoreFilePath();
+    if (!pickedPath) {
+      return;
+    }
+    await this.plugin.updateRestoreBackupFilePath(pickedPath);
+    await this.plugin.restoreFromBackupNow();
   }
 };
 var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
@@ -3377,7 +3510,9 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       this.openPopup();
     });
     this.app.workspace.onLayoutReady(() => {
-      void this.ensureSidebarTab();
+      fireAndForget(this.ensureSidebarTab(), (error) => {
+        console.error(error);
+      });
     });
     this.addCommand({
       id: "open-tree-hierarchy",
@@ -3426,7 +3561,6 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
   onunload() {
     this.popupModal?.close();
     this.popupModal = null;
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_TREE_HIERARCHY);
   }
   async loadSettings() {
     const savedSettings = await this.loadData();
@@ -3435,11 +3569,15 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     if (!this.settings.backupDbPath && recoveryState.backupDbPath) {
       this.settings.backupDbPath = recoveryState.backupDbPath;
     }
+    if (!this.settings.restoreBackupFilePath && recoveryState.restoreBackupFilePath) {
+      this.settings.restoreBackupFilePath = recoveryState.restoreBackupFilePath;
+    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
     await this.writeRecoveryState({
-      backupDbPath: this.settings.backupDbPath
+      backupDbPath: this.settings.backupDbPath,
+      restoreBackupFilePath: this.settings.restoreBackupFilePath
     });
   }
   async reloadStore() {
@@ -3504,8 +3642,26 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     const uniquePath = this.getAvailableNotePath(notePath);
     const file = await this.app.vault.create(uniquePath, `# ${title}
 `);
-    await this.store.createNoteNode(title, parentId, file.path);
+    const createdId = await this.store.createNoteNode(title, parentId, file.path);
     await this.app.workspace.getLeaf(true).openFile(file);
+    return createdId;
+  }
+  async createParentForNode(targetNode, type, title, folder) {
+    const location = this.findNodeLocation(targetNode.key);
+    if (!location) {
+      throw new Error("Could not determine the target node location.");
+    }
+    const targetNodeId = await this.resolveNodeIdForDisplayNode(targetNode);
+    if (targetNodeId === null) {
+      throw new Error("Could not resolve the target node.");
+    }
+    const newParentId = type === "group" ? await this.store.createGroup(title, location.parentId) : await this.createNoteInHierarchy(title, location.parentId, folder);
+    const refreshedLocation = this.findNodeLocation(targetNode.key);
+    if (!refreshedLocation) {
+      throw new Error("Could not refresh the target node location.");
+    }
+    await this.store.moveNodeToIndex(newParentId, refreshedLocation.parentId, refreshedLocation.index);
+    await this.store.moveNodeToIndex(targetNodeId, newParentId, 0);
   }
   async ensureFolderExists(path2) {
     const parts = path2.split("/").filter(Boolean);
@@ -3566,6 +3722,13 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     };
     return walk(this.getDisplayTree(), null);
   }
+  getDisplaySiblings(parentId) {
+    if (parentId === null) {
+      return this.getDisplayTree();
+    }
+    const parentNode = this.findDisplayNodeByKey(`db:${parentId}`);
+    return parentNode?.children ?? [];
+  }
   getRootAttachableNotes() {
     const rootNotes = this.getDisplayTree().filter((node) => node.type === "note" && node.parentId === null && node.notePath);
     return rootNotes.map((node) => this.app.vault.getAbstractFileByPath(node.notePath)).filter((file) => file instanceof import_obsidian.TFile);
@@ -3590,6 +3753,19 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
         throw new Error("Note file no longer exists.");
       }
       return this.store.ensureTrackedNote(file.basename, file.path);
+    }
+    return null;
+  }
+  async resolveNodeIdForDisplayNode(node) {
+    if (node.dbId !== null) {
+      return node.dbId;
+    }
+    if (node.type === "note" && node.notePath) {
+      const file = this.app.vault.getAbstractFileByPath(node.notePath);
+      if (!(file instanceof import_obsidian.TFile)) {
+        throw new Error("Note file no longer exists.");
+      }
+      return this.store.ensureTrackedNote(file.path, file.path);
     }
     return null;
   }
@@ -3655,9 +3831,24 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
   async updateBackupDbPath(value) {
     this.settings.backupDbPath = value.trim();
     await this.saveSettings();
-    if (this.settings.backupDbPath) {
-      await this.backupNow();
-    }
+  }
+  async updateRestoreBackupFilePath(value) {
+    this.settings.restoreBackupFilePath = value.trim();
+    await this.saveSettings();
+  }
+  async pickBackupPath() {
+    const pickedPath = await this.showSystemPathPicker({
+      type: "directory",
+      title: "Choose backup directory"
+    });
+    return pickedPath;
+  }
+  async pickRestoreFilePath() {
+    const pickedPath = await this.showSystemPathPicker({
+      type: "file",
+      title: "Choose backup file to restore"
+    });
+    return pickedPath;
   }
   async updateNoteRootFolder(value) {
     this.settings.noteRootFolder = value.trim();
@@ -3666,15 +3857,15 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
   async backupNow() {
     await this.whenReady();
     await this.store.syncVaultNotes();
-    await this.store.save();
     if (!this.settings.backupDbPath.trim()) {
       throw new Error("Set a backup database path first.");
     }
+    await this.writeBackupDatabase(this.store.exportDatabaseBytes());
     new import_obsidian.Notice("Hierarchy view database backup updated.");
   }
   async restoreFromBackupNow() {
     await this.loadSettings();
-    const backupBytes = await this.readBackupDatabase();
+    const backupBytes = await this.readRestoreBackupFile();
     if (!backupBytes) {
       throw new Error("Backup database was not found.");
     }
@@ -3692,16 +3883,26 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     if (!backupPath) {
       return;
     }
-    const resolvedPath = await this.resolveBackupFilePath(backupPath);
-    await import_promises.default.mkdir(import_path.default.dirname(resolvedPath), { recursive: true });
-    await import_promises.default.writeFile(resolvedPath, data);
+    const target = await this.resolveBackupTarget(backupPath);
+    if (target.type === "directory") {
+      await import_promises.default.mkdir(target.path, { recursive: true });
+      const backupFilePath = import_path.default.join(target.path, this.createBackupFileName());
+      await import_promises.default.writeFile(backupFilePath, data);
+      return;
+    }
+    await import_promises.default.mkdir(import_path.default.dirname(target.path), { recursive: true });
+    await import_promises.default.writeFile(target.path, data);
   }
   async readBackupDatabase() {
     const backupPath = this.settings.backupDbPath.trim();
     if (!backupPath) {
       return null;
     }
-    const resolvedPath = await this.resolveBackupFilePath(backupPath);
+    const target = await this.resolveBackupTarget(backupPath);
+    const resolvedPath = target.type === "directory" ? await this.findLatestBackupFile(target.path) : target.path;
+    if (!resolvedPath) {
+      return null;
+    }
     try {
       const data = await import_promises.default.readFile(resolvedPath);
       return new Uint8Array(data);
@@ -3709,19 +3910,35 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       return null;
     }
   }
-  async resolveBackupFilePath(configuredPath) {
+  async readRestoreBackupFile() {
+    const restorePath = this.settings.restoreBackupFilePath.trim();
+    if (!restorePath) {
+      return null;
+    }
+    if (this.looksLikeDirectoryPath(restorePath)) {
+      throw new Error("Restore backup file must be a SQLite file path, not a directory.");
+    }
+    const resolvedPath = this.resolveConfiguredBackupPath(restorePath);
+    try {
+      const data = await import_promises.default.readFile(resolvedPath);
+      return new Uint8Array(data);
+    } catch {
+      return null;
+    }
+  }
+  async resolveBackupTarget(configuredPath) {
     const resolvedPath = this.resolveConfiguredBackupPath(configuredPath);
     const pathInfo = await this.getPathInfo(resolvedPath);
     if (pathInfo?.isDirectory) {
-      return import_path.default.join(resolvedPath, DEFAULT_DB_FILENAME);
+      return { type: "directory", path: resolvedPath };
     }
     if (pathInfo?.exists) {
-      return resolvedPath;
+      return { type: "file", path: resolvedPath };
     }
     if (this.looksLikeDirectoryPath(configuredPath)) {
-      return import_path.default.join(resolvedPath, DEFAULT_DB_FILENAME);
+      return { type: "directory", path: resolvedPath };
     }
-    return resolvedPath;
+    return { type: "file", path: resolvedPath };
   }
   resolveConfiguredBackupPath(configuredPath) {
     if (import_path.default.isAbsolute(configuredPath)) {
@@ -3751,6 +3968,45 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       return null;
     }
   }
+  createBackupFileName() {
+    const now = /* @__PURE__ */ new Date();
+    const datePart = [
+      String(now.getDate()).padStart(2, "0"),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getFullYear())
+    ].join("");
+    const timePart = [
+      String(now.getHours()).padStart(2, "0"),
+      String(now.getMinutes()).padStart(2, "0"),
+      String(now.getSeconds()).padStart(2, "0")
+    ].join("");
+    const vaultName = this.getSanitizedVaultName();
+    return `hv_${vaultName}_${datePart}_${timePart}.sqlite`;
+  }
+  getSanitizedVaultName() {
+    const vaultName = this.app.vault.getName().trim() || "vault";
+    const safeName = vaultName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+    return safeName || "vault";
+  }
+  async findLatestBackupFile(directoryPath) {
+    try {
+      const entries = await import_promises.default.readdir(directoryPath, { withFileTypes: true });
+      const backupFiles = entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".sqlite")).map((entry) => import_path.default.join(directoryPath, entry.name));
+      if (backupFiles.length === 0) {
+        return null;
+      }
+      const filesWithStats = await Promise.all(
+        backupFiles.map(async (filePath) => ({
+          filePath,
+          stat: await import_promises.default.stat(filePath)
+        }))
+      );
+      filesWithStats.sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs);
+      return filesWithStats[0].filePath;
+    } catch {
+      return null;
+    }
+  }
   getVaultBasePath() {
     const adapter = this.app.vault.adapter;
     if (typeof adapter.getBasePath === "function") {
@@ -3766,11 +4022,13 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       const raw = await import_promises.default.readFile(this.getRecoveryStatePath(), "utf8");
       const parsed = JSON.parse(raw);
       return {
-        backupDbPath: typeof parsed.backupDbPath === "string" ? parsed.backupDbPath : ""
+        backupDbPath: typeof parsed.backupDbPath === "string" ? parsed.backupDbPath : "",
+        restoreBackupFilePath: typeof parsed.restoreBackupFilePath === "string" ? parsed.restoreBackupFilePath : ""
       };
     } catch {
       return {
-        backupDbPath: ""
+        backupDbPath: "",
+        restoreBackupFilePath: ""
       };
     }
   }
@@ -3781,5 +4039,76 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
   }
   getRecoveryStatePath() {
     return import_path.default.join(this.getVaultBasePath(), this.app.vault.configDir, `${this.manifest.id}-recovery.json`);
+  }
+  async showSystemPathPicker(options) {
+    const electronDialogPath = await this.pickPathWithElectron(options);
+    if (electronDialogPath) {
+      return electronDialogPath;
+    }
+    return this.pickPathWithHtmlInput(options);
+  }
+  async pickPathWithElectron(options) {
+    try {
+      const win = window;
+      const electron = win.require?.("electron");
+      const dialog = electron?.remote?.dialog ?? electron?.dialog;
+      if (!dialog?.showOpenDialog) {
+        return null;
+      }
+      const result = await dialog.showOpenDialog({
+        title: options.title,
+        properties: options.type === "directory" ? ["openDirectory", "createDirectory"] : ["openFile"],
+        filters: options.type === "file" ? [{ name: "SQLite", extensions: ["sqlite", "db"] }] : void 0
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      return result.filePaths[0];
+    } catch {
+      return null;
+    }
+  }
+  async pickPathWithHtmlInput(options) {
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.style.display = "none";
+      if (options.type === "directory") {
+        input.setAttribute("webkitdirectory", "");
+      } else {
+        input.accept = ".sqlite,.db";
+      }
+      const cleanup = () => {
+        input.remove();
+      };
+      input.addEventListener(
+        "change",
+        () => {
+          const files = input.files;
+          if (!files || files.length === 0) {
+            cleanup();
+            resolve(null);
+            return;
+          }
+          const file = files[0];
+          if (options.type === "directory") {
+            const filePath = file.path;
+            const relativePath = file.webkitRelativePath;
+            if (filePath && relativePath) {
+              const normalizedRelativePath = relativePath.replace(/\//g, import_path.default.sep);
+              const directoryPath = filePath.slice(0, filePath.length - normalizedRelativePath.length);
+              cleanup();
+              resolve(directoryPath.replace(/[\\/]+$/, ""));
+              return;
+            }
+          }
+          cleanup();
+          resolve(file.path ?? null);
+        },
+        { once: true }
+      );
+      document.body.appendChild(input);
+      input.click();
+    });
   }
 };
