@@ -10,6 +10,8 @@ import {
 	TFile,
 	WorkspaceLeaf,
 } from "obsidian";
+import fs from "fs/promises";
+import path from "path";
 import initSqlJs from "sql.js";
 
 const VIEW_TYPE_TREE_HIERARCHY = "sqlite-tree-hierarchy-view";
@@ -42,7 +44,12 @@ interface SqlJsModule {
 
 interface TreeHierarchySettings {
 	dbFileName: string;
+	backupDbPath: string;
 	noteRootFolder: string;
+}
+
+interface RecoveryState {
+	backupDbPath: string;
 }
 
 interface TreeNodeRecord {
@@ -68,6 +75,7 @@ interface DisplayTreeNode {
 
 const DEFAULT_SETTINGS: TreeHierarchySettings = {
 	dbFileName: DEFAULT_DB_FILENAME,
+	backupDbPath: "",
 	noteRootFolder: "",
 };
 
@@ -79,6 +87,12 @@ function fireAndForget(task: Promise<unknown>, onError?: (error: unknown) => voi
 		}
 		console.error(error);
 	});
+}
+
+function toArrayBuffer(data: Uint8Array): ArrayBuffer {
+	const buffer = new ArrayBuffer(data.byteLength);
+	new Uint8Array(buffer).set(data);
+	return buffer;
 }
 
 class TreeHierarchyStore {
@@ -106,6 +120,7 @@ class TreeHierarchyStore {
 		this.sql = sql;
 
 		await this.ensureDbDirectory(adapter);
+		await this.restorePrimaryFromBackupIfNeeded(adapter);
 		const dbPath = this.plugin.getDatabasePath();
 		if (await adapter.exists(dbPath)) {
 			const binary = new Uint8Array(await adapter.readBinary(dbPath));
@@ -151,7 +166,8 @@ class TreeHierarchyStore {
 		const adapter = this.plugin.app.vault.adapter as typeof this.plugin.app.vault.adapter & {
 			writeBinary(path: string, data: ArrayBuffer): Promise<void>;
 		};
-		await adapter.writeBinary(this.plugin.getDatabasePath(), fileData.buffer);
+		await adapter.writeBinary(this.plugin.getDatabasePath(), toArrayBuffer(fileData));
+		await this.plugin.writeBackupDatabase(fileData);
 	}
 
 	private async ensureDbDirectory(
@@ -164,6 +180,26 @@ class TreeHierarchyStore {
 		if (!(await adapter.exists(dir))) {
 			await adapter.mkdir(dir);
 		}
+	}
+
+	private async restorePrimaryFromBackupIfNeeded(
+		adapter: typeof this.plugin.app.vault.adapter & {
+			exists(path: string, sensitive?: boolean): Promise<boolean>;
+			writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+		},
+	): Promise<void> {
+		const primaryPath = this.plugin.getDatabasePath();
+		if (await adapter.exists(primaryPath)) {
+			return;
+		}
+
+		const backupBytes = await this.plugin.readBackupDatabase();
+		if (!backupBytes) {
+			return;
+		}
+
+		await adapter.writeBinary(primaryPath, toArrayBuffer(backupBytes));
+		new Notice("Hierarchy view restored its database from the backup location.");
 	}
 
 	getTree(): TreeNodeRecord[] {
@@ -1388,6 +1424,41 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Backup database path")
+			.setDesc("Optional backup copy path for reinstall recovery. Supports absolute paths or vault-relative paths.")
+			.addText((text) =>
+				text
+					.setPlaceholder("C:\\Backups\\hierarchy-view.sqlite")
+					.setValue(this.plugin.settings.backupDbPath)
+					.onChange((value) => {
+						fireAndForget(this.plugin.updateBackupDbPath(value), (error) => {
+							console.error(error);
+							new Notice("Failed to save backup database path.");
+						});
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Backup actions")
+			.setDesc("Create a backup copy now or restore the primary plugin database from the configured backup.")
+			.addButton((button) =>
+				button.setButtonText("Back up now").onClick(() => {
+					fireAndForget(this.plugin.backupNow(), (error) => {
+						console.error(error);
+						new Notice(error instanceof Error ? error.message : "Failed to create backup.");
+					});
+				}),
+			)
+			.addButton((button) =>
+				button.setButtonText("Restore now").onClick(() => {
+					fireAndForget(this.plugin.restoreFromBackupNow(), (error) => {
+						console.error(error);
+						new Notice(error instanceof Error ? error.message : "Failed to restore backup.");
+					});
+				}),
+			);
+
+		new Setting(containerEl)
 			.setName("Notes root folder")
 			.setDesc("Vault folder used for notes created from the hierarchy.")
 			.addText((text) =>
@@ -1443,6 +1514,28 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: "backup-database-now",
+			name: "Back up database now",
+			callback: () => {
+				fireAndForget(this.backupNow(), (error) => {
+					console.error(error);
+					new Notice(error instanceof Error ? error.message : "Failed to create backup.");
+				});
+			},
+		});
+
+		this.addCommand({
+			id: "restore-database-from-backup",
+			name: "Restore database from backup",
+			callback: () => {
+				fireAndForget(this.restoreFromBackupNow(), (error) => {
+					console.error(error);
+					new Notice(error instanceof Error ? error.message : "Failed to restore backup.");
+				});
+			},
+		});
+
 		this.addSettingTab(new TreeHierarchySettingTab(this.app, this));
 		this.startupPromise = this.initializePlugin();
 		fireAndForget(this.startupPromise, (error) => {
@@ -1458,11 +1551,19 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const savedSettings = (await this.loadData()) as Partial<TreeHierarchySettings> | null;
+		const recoveryState = await this.readRecoveryState();
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings ?? {});
+		if (!this.settings.backupDbPath && recoveryState.backupDbPath) {
+			this.settings.backupDbPath = recoveryState.backupDbPath;
+		}
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+		await this.writeRecoveryState({
+			backupDbPath: this.settings.backupDbPath,
+		});
 	}
 
 	async reloadStore(): Promise<void> {
@@ -1711,8 +1812,122 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		await this.reloadStore();
 	}
 
+	async updateBackupDbPath(value: string): Promise<void> {
+		this.settings.backupDbPath = value.trim();
+		await this.saveSettings();
+		if (this.settings.backupDbPath) {
+			await this.backupNow();
+		}
+	}
+
 	async updateNoteRootFolder(value: string): Promise<void> {
 		this.settings.noteRootFolder = value.trim();
 		await this.saveSettings();
+	}
+
+	async backupNow(): Promise<void> {
+		await this.whenReady();
+		await this.store.syncVaultNotes();
+		await this.store.save();
+		if (!this.settings.backupDbPath.trim()) {
+			throw new Error("Set a backup database path first.");
+		}
+		new Notice("Hierarchy view database backup updated.");
+	}
+
+	async restoreFromBackupNow(): Promise<void> {
+		await this.loadSettings();
+		const backupBytes = await this.readBackupDatabase();
+		if (!backupBytes) {
+			throw new Error("Backup database was not found.");
+		}
+
+		const adapter = this.app.vault.adapter as typeof this.app.vault.adapter & {
+			exists(path: string, sensitive?: boolean): Promise<boolean>;
+			mkdir(path: string): Promise<void>;
+			writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+		};
+		const primaryDir = this.getDatabaseDirectory();
+		if (!(await adapter.exists(primaryDir))) {
+			await adapter.mkdir(primaryDir);
+		}
+		await adapter.writeBinary(this.getDatabasePath(), toArrayBuffer(backupBytes));
+		await this.reloadStore();
+		new Notice("Hierarchy view database restored from backup.");
+	}
+
+	async writeBackupDatabase(data: Uint8Array): Promise<void> {
+		const backupPath = this.settings.backupDbPath.trim();
+		if (!backupPath) {
+			return;
+		}
+
+		const resolvedPath = this.resolveBackupPath(backupPath);
+		await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+		await fs.writeFile(resolvedPath, data);
+	}
+
+	async readBackupDatabase(): Promise<Uint8Array | null> {
+		const backupPath = this.settings.backupDbPath.trim();
+		if (!backupPath) {
+			return null;
+		}
+
+		const resolvedPath = this.resolveBackupPath(backupPath);
+		try {
+			const data = await fs.readFile(resolvedPath);
+			return new Uint8Array(data);
+		} catch {
+			return null;
+		}
+	}
+
+	private resolveBackupPath(configuredPath: string): string {
+		if (path.isAbsolute(configuredPath)) {
+			return configuredPath;
+		}
+
+		const vaultBasePath = this.getVaultBasePath();
+		return path.resolve(vaultBasePath, configuredPath);
+	}
+
+	private getVaultBasePath(): string {
+		const adapter = this.app.vault.adapter as typeof this.app.vault.adapter & {
+			getBasePath?: () => string;
+			basePath?: string;
+		};
+
+		if (typeof adapter.getBasePath === "function") {
+			return adapter.getBasePath();
+		}
+		if (typeof adapter.basePath === "string" && adapter.basePath) {
+			return adapter.basePath;
+		}
+
+		throw new Error("Could not resolve the vault base path for the backup database.");
+	}
+
+	private async readRecoveryState(): Promise<RecoveryState> {
+		try {
+			const raw = await fs.readFile(this.getRecoveryStatePath(), "utf8");
+			const parsed = JSON.parse(raw) as Partial<RecoveryState>;
+			return {
+				backupDbPath: typeof parsed.backupDbPath === "string" ? parsed.backupDbPath : "",
+			};
+		} catch {
+			return {
+				backupDbPath: "",
+			};
+		}
+	}
+
+	private async writeRecoveryState(state: RecoveryState): Promise<void> {
+		const recoveryPath = this.getRecoveryStatePath();
+		await fs.mkdir(path.dirname(recoveryPath), { recursive: true });
+		await fs.writeFile(recoveryPath, JSON.stringify(state, null, 2), "utf8");
+	}
+
+	private getRecoveryStatePath(): string {
+		return path.join(this.getVaultBasePath(), this.app.vault.configDir, `${this.manifest.id}-recovery.json`);
 	}
 }

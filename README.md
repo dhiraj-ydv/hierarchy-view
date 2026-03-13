@@ -27,7 +27,7 @@ The note text itself stays in your Obsidian files.
 
 ## Database location
 
-By default, the database file is stored here:
+Primary working database:
 
 `<vault>/.obsidian/plugins/hierarchy-view/tree-hierarchy.sqlite`
 
@@ -36,6 +36,19 @@ Example:
 `C:\Users\DhirajDesktop11\Documents\OBSIDIAN-NOTES\.obsidian\plugins\hierarchy-view\tree-hierarchy.sqlite`
 
 If you change the database filename in plugin settings, only the filename changes, not the folder.
+
+Optional backup database:
+
+- you can configure a second backup SQLite path in plugin settings
+- the path can be absolute or vault-relative
+- the plugin updates that backup automatically after database saves
+
+Recovery state:
+
+- the configured backup path is also written outside the plugin folder
+- this allows reinstall recovery even if the plugin folder was removed
+- recovery file path:
+  `<vault>/.obsidian/hierarchy-view-recovery.json`
 
 ## Main capabilities
 
@@ -133,6 +146,20 @@ Controls the SQLite filename inside:
 
 `<vault>/.obsidian/plugins/hierarchy-view/`
 
+### Backup database path
+
+Optional second-copy path for reinstall recovery.
+
+Behavior:
+
+- if set, the plugin writes a backup copy after database saves
+- if the primary plugin-folder database is missing on startup but the backup exists, the plugin restores the primary database from the backup automatically
+
+### Backup actions
+
+- `Back up now`: writes the current database to the configured backup path immediately
+- `Restore now`: restores the primary plugin database from the configured backup path
+
 ### Notes root folder
 
 Controls the vault folder used when the plugin creates a brand-new note.
@@ -220,6 +247,8 @@ Important columns:
 - the plugin is desktop-only
 - the hierarchy is metadata only; vault note content stays in files
 - the plugin is intended to coexist with normal Obsidian navigation, not replace it
+- normal plugin version updates reuse the existing primary database in the plugin folder
+- uninstall/reinstall recovery uses the optional backup database path when configured
 
 ## Limitations
 
