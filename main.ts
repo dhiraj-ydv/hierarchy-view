@@ -1437,7 +1437,7 @@ class TreeHierarchyView extends ItemView {
 
 		try {
 			await this.plugin.moveDisplayNode(draggedNode, parentId);
-			await this.render();
+			this.render();
 		} catch (error) {
 			console.error(error);
 			new Notice(error instanceof Error ? error.message : "Failed to move node.");
@@ -1461,7 +1461,7 @@ class TreeHierarchyView extends ItemView {
 			}
 			const targetIndex = position === "before" ? location.index : location.index + 1;
 			await this.plugin.moveDisplayNodeToIndex(draggedNode, location.parentId, targetIndex);
-			await this.render();
+			this.render();
 		} catch (error) {
 			console.error(error);
 			new Notice(error instanceof Error ? error.message : "Failed to reorder node.");
@@ -1605,7 +1605,7 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 			.setName("Documentation")
 			.setDesc("Open the plugin README for a full feature overview.")
 			.addButton((button) =>
-				button.setButtonText("View README").onClick(() => {
+				button.setButtonText("View readme").onClick(() => {
 					window.open("https://github.com/dhiraj-ydv/hierarchy-view/blob/master/README.md", "_blank");
 				}),
 			);
@@ -2314,7 +2314,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 						: ["openFile"],
 				filters:
 					options.type === "file"
-						? [{ name: "SQLite", extensions: ["sqlite", "db"] }]
+						? [{ name: "Sqlite", extensions: ["sqlite", "db"] }]
 						: undefined,
 			});
 			if (result.canceled || result.filePaths.length === 0) {
@@ -2333,7 +2333,9 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		return new Promise((resolve) => {
 			const input = document.createElement("input");
 			input.type = "file";
-			input.style.display = "none";
+			input.setCssProps({
+				display: "none",
+			});
 			if (options.type === "directory") {
 				input.setAttribute("webkitdirectory", "");
 			} else {

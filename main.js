@@ -3346,7 +3346,7 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     }
     try {
       await this.plugin.moveDisplayNode(draggedNode, parentId);
-      await this.render();
+      this.render();
     } catch (error) {
       console.error(error);
       new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to move node.");
@@ -3366,7 +3366,7 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
       }
       const targetIndex = position === "before" ? location.index : location.index + 1;
       await this.plugin.moveDisplayNodeToIndex(draggedNode, location.parentId, targetIndex);
-      await this.render();
+      this.render();
     } catch (error) {
       console.error(error);
       new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to reorder node.");
@@ -3473,7 +3473,7 @@ var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     new import_obsidian.Setting(containerEl).setName("Documentation").setDesc("Open the plugin README for a full feature overview.").addButton(
-      (button) => button.setButtonText("View README").onClick(() => {
+      (button) => button.setButtonText("View readme").onClick(() => {
         window.open("https://github.com/dhiraj-ydv/hierarchy-view/blob/master/README.md", "_blank");
       })
     );
@@ -4042,7 +4042,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       const result = await dialog.showOpenDialog({
         title: options.title,
         properties: options.type === "directory" ? ["openDirectory", "createDirectory"] : ["openFile"],
-        filters: options.type === "file" ? [{ name: "SQLite", extensions: ["sqlite", "db"] }] : void 0
+        filters: options.type === "file" ? [{ name: "Sqlite", extensions: ["sqlite", "db"] }] : void 0
       });
       if (result.canceled || result.filePaths.length === 0) {
         return null;
@@ -4056,7 +4056,9 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     return new Promise((resolve) => {
       const input = document.createElement("input");
       input.type = "file";
-      input.style.display = "none";
+      input.setCssProps({
+        display: "none"
+      });
       if (options.type === "directory") {
         input.setAttribute("webkitdirectory", "");
       } else {
