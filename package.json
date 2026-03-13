@@ -1,6 +1,6 @@
 {
   "name": "obsidian-tree-hierarchy",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Obsidian plugin that stores a user-defined note hierarchy in a SQLite database.",
   "main": "main.js",
   "scripts": {

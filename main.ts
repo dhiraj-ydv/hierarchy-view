@@ -1600,6 +1600,15 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 						});
 					}),
 			);
+
+		new Setting(containerEl)
+			.setName("Documentation")
+			.setDesc("Open the plugin README for a full feature overview.")
+			.addButton((button) =>
+				button.setButtonText("View README").onClick(() => {
+					window.open("https://github.com/dhiraj-ydv/hierarchy-view/blob/master/README.md", "_blank");
+				}),
+			);
 	}
 
 	private async handleBackupBrowse(buttonEl: HTMLButtonElement): Promise<void> {

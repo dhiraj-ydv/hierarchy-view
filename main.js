@@ -3472,6 +3472,11 @@ var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
         });
       })
     );
+    new import_obsidian.Setting(containerEl).setName("Documentation").setDesc("Open the plugin README for a full feature overview.").addButton(
+      (button) => button.setButtonText("View README").onClick(() => {
+        window.open("https://github.com/dhiraj-ydv/hierarchy-view/blob/master/README.md", "_blank");
+      })
+    );
   }
   async handleBackupBrowse(buttonEl) {
     buttonEl.blur();
