@@ -695,6 +695,7 @@ class TreeHierarchyPopupModal extends Modal {
 
 	async render(): Promise<void> {
 		try {
+			await this.plugin.whenReady();
 			await this.plugin.store.syncVaultNotes();
 			const container = this.contentEl;
 			const previousTree = container.querySelector(".tree-hierarchy-tree");
@@ -1322,6 +1323,7 @@ class TreeHierarchyView extends ItemView {
 	}
 
 	private async openView(): Promise<void> {
+		await this.plugin.whenReady();
 		await this.plugin.store.syncVaultNotes();
 		this.render();
 	}
@@ -1406,6 +1408,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 	settings: TreeHierarchySettings = DEFAULT_SETTINGS;
 	store = new TreeHierarchyStore(this);
 	private popupModal: TreeHierarchyPopupModal | null = null;
+	private startupPromise: Promise<void> | null = null;
 
 	onload(): void {
 		this.registerView(
@@ -1441,7 +1444,8 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		});
 
 		this.addSettingTab(new TreeHierarchySettingTab(this.app, this));
-		fireAndForget(this.initializePlugin(), (error) => {
+		this.startupPromise = this.initializePlugin();
+		fireAndForget(this.startupPromise, (error) => {
 			console.error("Failed to initialize hierarchy view", error);
 			new Notice("Hierarchy view failed to initialize. Check the developer console.");
 		});
@@ -1504,7 +1508,10 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 
 		await leaf.setViewState({ type: VIEW_TYPE_TREE_HIERARCHY, active: false, pinned: true });
 	}
-	async refreshTreeView(): Promise<void> {
+	async refreshTreeView(skipReady = false): Promise<void> {
+		if (!skipReady) {
+			await this.whenReady();
+		}
 		await this.store.syncVaultNotes();
 		if (this.popupModal) {
 			await this.popupModal.render();
@@ -1654,6 +1661,12 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		this.popupModal.open();
 	}
 
+	async whenReady(): Promise<void> {
+		if (this.startupPromise) {
+			await this.startupPromise;
+		}
+	}
+
 	onPopupClosed(modal: TreeHierarchyPopupModal): void {
 		if (this.popupModal === modal) {
 			this.popupModal = null;
@@ -1689,6 +1702,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		await this.loadSettings();
 		await this.store.initialize();
 		await this.store.syncVaultNotes();
+		await this.refreshTreeView(true);
 	}
 
 	async updateDatabaseFileName(value: string): Promise<void> {

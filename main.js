@@ -2705,6 +2705,7 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
   }
   async render() {
     try {
+      await this.plugin.whenReady();
       await this.plugin.store.syncVaultNotes();
       const container = this.contentEl;
       const previousTree = container.querySelector(".tree-hierarchy-tree");
@@ -3255,6 +3256,7 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     });
   }
   async openView() {
+    await this.plugin.whenReady();
     await this.plugin.store.syncVaultNotes();
     this.render();
   }
@@ -3319,6 +3321,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     this.settings = DEFAULT_SETTINGS;
     this.store = new TreeHierarchyStore(this);
     this.popupModal = null;
+    this.startupPromise = null;
   }
   onload() {
     this.registerView(
@@ -3349,7 +3352,8 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       }
     });
     this.addSettingTab(new TreeHierarchySettingTab(this.app, this));
-    fireAndForget(this.initializePlugin(), (error) => {
+    this.startupPromise = this.initializePlugin();
+    fireAndForget(this.startupPromise, (error) => {
       console.error("Failed to initialize hierarchy view", error);
       new import_obsidian.Notice("Hierarchy view failed to initialize. Check the developer console.");
     });
@@ -3402,7 +3406,10 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     }
     await leaf.setViewState({ type: VIEW_TYPE_TREE_HIERARCHY, active: false, pinned: true });
   }
-  async refreshTreeView() {
+  async refreshTreeView(skipReady = false) {
+    if (!skipReady) {
+      await this.whenReady();
+    }
     await this.store.syncVaultNotes();
     if (this.popupModal) {
       await this.popupModal.render();
@@ -3530,6 +3537,11 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     this.popupModal = new TreeHierarchyPopupModal(this.app, this);
     this.popupModal.open();
   }
+  async whenReady() {
+    if (this.startupPromise) {
+      await this.startupPromise;
+    }
+  }
   onPopupClosed(modal) {
     if (this.popupModal === modal) {
       this.popupModal = null;
@@ -3560,6 +3572,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     await this.loadSettings();
     await this.store.initialize();
     await this.store.syncVaultNotes();
+    await this.refreshTreeView(true);
   }
   async updateDatabaseFileName(value) {
     this.settings.dbFileName = value.trim() || DEFAULT_DB_FILENAME;
