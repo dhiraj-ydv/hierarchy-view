@@ -49,10 +49,12 @@
 
 .tree-hierarchy-node-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 4px 0;
   border-radius: 8px;
+  position: relative;
+  min-width: 0;
 }
 
 .tree-hierarchy-node-header::before {
@@ -64,6 +66,7 @@
 }
 
 .tree-hierarchy-node-toggle {
+  flex: 0 0 20px;
   width: 20px;
   height: 20px;
   display: inline-flex;
@@ -76,12 +79,20 @@
 }
 
 .tree-hierarchy-node-label {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  align-self: stretch;
   border: 0;
   background: transparent;
   color: var(--text-normal);
   cursor: pointer;
   padding: 0;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tree-hierarchy-node-label.is-note {
@@ -90,8 +101,10 @@
 
 .tree-hierarchy-node-actions {
   display: inline-flex;
+  flex: 0 0 auto;
   gap: 4px;
   margin-left: auto;
+  white-space: nowrap;
 }
 
 .tree-hierarchy-node-actions button {
