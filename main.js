@@ -2176,7 +2176,8 @@ var DEFAULT_DB_FILENAME = "tree-hierarchy.sqlite";
 var DEFAULT_SETTINGS = {
   dbFileName: DEFAULT_DB_FILENAME,
   backupDbPath: "",
-  noteRootFolder: ""
+  noteRootFolder: "",
+  noteExtension: ".md"
 };
 function fireAndForget(task, onError) {
   void task.catch((error) => {
@@ -3474,6 +3475,14 @@ var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
         });
       })
     );
+    new import_obsidian.Setting(containerEl).setName("Note file format").setDesc("File extension for notes created from the hierarchy.").addDropdown(
+      (dropdown) => dropdown.addOption(".md", "Markdown (.md)").addOption(".html", "HTML (.html)").setValue(this.plugin.settings.noteExtension).onChange((value) => {
+        fireAndForget(this.plugin.updateNoteExtension(value), (error) => {
+          console.error(error);
+          new import_obsidian.Notice("Failed to save note file format.");
+        });
+      })
+    );
     new import_obsidian.Setting(containerEl).setName("Documentation").setDesc("Open the plugin README for a full feature overview.").addButton(
       (button) => button.setButtonText("View readme").onClick(() => {
         window.open("https://github.com/dhiraj-ydv/hierarchy-view/blob/master/README.md", "_blank");
@@ -3635,10 +3644,20 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       await this.ensureFolderExists(normalizedFolder);
     }
     const safeTitle = title.replace(/[\\/:*?"<>|#^\]]/g, "").trim() || "Untitled";
-    const notePath = normalizedFolder ? `${normalizedFolder}/${safeTitle}.md` : `${safeTitle}.md`;
-    const uniquePath = this.getAvailableNotePath(notePath);
-    const file = await this.app.vault.create(uniquePath, `# ${title}
-`);
+    const extension = this.settings.noteExtension || ".md";
+    const notePath = normalizedFolder ? `${normalizedFolder}/${safeTitle}${extension}` : `${safeTitle}${extension}`;
+    const uniquePath = this.getAvailableNotePath(notePath, extension);
+    const fileContent = extension === ".html" ? `<!DOCTYPE html>
+<html>
+<head>
+<title>${title}</title>
+</head>
+<body>
+<h1>${title}</h1>
+</body>
+</html>` : `# ${title}
+`;
+    const file = await this.app.vault.create(uniquePath, fileContent);
     const createdId = await this.store.createNoteNode(title, parentId, file.path);
     await this.app.workspace.getLeaf(true).openFile(file);
     return createdId;
@@ -3670,11 +3689,10 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       }
     }
   }
-  getAvailableNotePath(notePath) {
+  getAvailableNotePath(notePath, extension) {
     if (!this.app.vault.getAbstractFileByPath(notePath)) {
       return notePath;
     }
-    const extension = ".md";
     const basePath = notePath.endsWith(extension) ? notePath.slice(0, -extension.length) : notePath;
     let suffix = 1;
     let candidate = `${basePath} ${suffix}${extension}`;
@@ -3845,6 +3863,10 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
   }
   async updateNoteRootFolder(value) {
     this.settings.noteRootFolder = value.trim();
+    await this.saveSettings();
+  }
+  async updateNoteExtension(value) {
+    this.settings.noteExtension = value;
     await this.saveSettings();
   }
   async backupNow() {

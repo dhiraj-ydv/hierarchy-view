@@ -47,6 +47,7 @@ interface TreeHierarchySettings {
 	dbFileName: string;
 	backupDbPath: string;
 	noteRootFolder: string;
+	noteExtension: string;
 }
 
 interface RecoveryState {
@@ -78,6 +79,7 @@ const DEFAULT_SETTINGS: TreeHierarchySettings = {
 	dbFileName: DEFAULT_DB_FILENAME,
 	backupDbPath: "",
 	noteRootFolder: "",
+	noteExtension: ".md",
 };
 
 function fireAndForget(task: Promise<unknown>, onError?: (error: unknown) => void): void {
@@ -1604,6 +1606,22 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Note file format")
+			.setDesc("File extension for notes created from the hierarchy.")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption(".md", "Markdown (.md)")
+					.addOption(".html", "HTML (.html)")
+					.setValue(this.plugin.settings.noteExtension)
+					.onChange((value) => {
+						fireAndForget(this.plugin.updateNoteExtension(value), (error) => {
+							console.error(error);
+							new Notice("Failed to save note file format.");
+						});
+					}),
+			);
+
+		new Setting(containerEl)
 			.setName("Documentation")
 			.setDesc("Open the plugin README for a full feature overview.")
 			.addButton((button) =>
@@ -1787,9 +1805,13 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 
 		const safeTitle = title.replace(/[\\/:*?"<>|#^\]]/g, "").trim() || "Untitled";
-		const notePath = normalizedFolder ? `${normalizedFolder}/${safeTitle}.md` : `${safeTitle}.md`;
-		const uniquePath = this.getAvailableNotePath(notePath);
-		const file = await this.app.vault.create(uniquePath, `# ${title}\n`);
+		const extension = this.settings.noteExtension || ".md";
+		const notePath = normalizedFolder ? `${normalizedFolder}/${safeTitle}${extension}` : `${safeTitle}${extension}`;
+		const uniquePath = this.getAvailableNotePath(notePath, extension);
+		const fileContent = extension === ".html" 
+			? `<!DOCTYPE html>\n<html>\n<head>\n<title>${title}</title>\n</head>\n<body>\n<h1>${title}</h1>\n</body>\n</html>`
+			: `# ${title}\n`;
+		const file = await this.app.vault.create(uniquePath, fileContent);
 		const createdId = await this.store.createNoteNode(title, parentId, file.path);
 		await this.app.workspace.getLeaf(true).openFile(file);
 		return createdId;
@@ -1836,12 +1858,11 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 	}
 
-	private getAvailableNotePath(notePath: string): string {
+	private getAvailableNotePath(notePath: string, extension: string): string {
 		if (!this.app.vault.getAbstractFileByPath(notePath)) {
 			return notePath;
 		}
 
-		const extension = ".md";
 		const basePath = notePath.endsWith(extension) ? notePath.slice(0, -extension.length) : notePath;
 		let suffix = 1;
 		let candidate = `${basePath} ${suffix}${extension}`;
@@ -2044,6 +2065,11 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 
 	async updateNoteRootFolder(value: string): Promise<void> {
 		this.settings.noteRootFolder = value.trim();
+		await this.saveSettings();
+	}
+
+	async updateNoteExtension(value: string): Promise<void> {
+		this.settings.noteExtension = value;
 		await this.saveSettings();
 	}
 
