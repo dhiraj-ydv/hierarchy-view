@@ -164,13 +164,13 @@ Behavior:
 
 ### Restore database
 
-Restore action from a specific selected backup file.
+Restore action that always asks you to pick a backup file.
 
 Behavior:
 
 - `Restore` opens the system file picker
 - you choose the exact backup SQLite file to restore from
-- the selected restore file is used immediately and is not shown as a saved text field
+- the command does not remember any previous path—the picker is shown every time
 
 ### Notes root folder
 

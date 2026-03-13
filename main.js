@@ -2176,7 +2176,6 @@ var DEFAULT_DB_FILENAME = "tree-hierarchy.sqlite";
 var DEFAULT_SETTINGS = {
   dbFileName: DEFAULT_DB_FILENAME,
   backupDbPath: "",
-  restoreBackupFilePath: "",
   noteRootFolder: ""
 };
 function fireAndForget(task, onError) {
@@ -3457,7 +3456,7 @@ var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
         });
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Restore database").addButton(
+    new import_obsidian.Setting(containerEl).setName("Restore database").setDesc("Pick the backup file to restore from.").addButton(
       (button) => button.setButtonText("Restore").onClick(() => {
         fireAndForget(this.handleRestoreBrowse(button.buttonEl), (error) => {
           console.error(error);
@@ -3485,11 +3484,6 @@ var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
   }
   async handleRestoreBrowse(buttonEl) {
     buttonEl.blur();
-    const pickedPath = await this.plugin.pickRestoreFilePath();
-    if (!pickedPath) {
-      return;
-    }
-    await this.plugin.updateRestoreBackupFilePath(pickedPath);
     await this.plugin.restoreFromBackupNow();
   }
 };
@@ -3569,15 +3563,11 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     if (!this.settings.backupDbPath && recoveryState.backupDbPath) {
       this.settings.backupDbPath = recoveryState.backupDbPath;
     }
-    if (!this.settings.restoreBackupFilePath && recoveryState.restoreBackupFilePath) {
-      this.settings.restoreBackupFilePath = recoveryState.restoreBackupFilePath;
-    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
     await this.writeRecoveryState({
-      backupDbPath: this.settings.backupDbPath,
-      restoreBackupFilePath: this.settings.restoreBackupFilePath
+      backupDbPath: this.settings.backupDbPath
     });
   }
   async reloadStore() {
@@ -3832,10 +3822,6 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     this.settings.backupDbPath = value.trim();
     await this.saveSettings();
   }
-  async updateRestoreBackupFilePath(value) {
-    this.settings.restoreBackupFilePath = value.trim();
-    await this.saveSettings();
-  }
   async pickBackupPath() {
     const pickedPath = await this.showSystemPathPicker({
       type: "directory",
@@ -3864,8 +3850,11 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     new import_obsidian.Notice("Hierarchy view database backup updated.");
   }
   async restoreFromBackupNow() {
-    await this.loadSettings();
-    const backupBytes = await this.readRestoreBackupFile();
+    const pickedPath = await this.pickRestoreFilePath();
+    if (!pickedPath) {
+      throw new Error("Restore cancelled.");
+    }
+    const backupBytes = await this.readBackupFile(pickedPath);
     if (!backupBytes) {
       throw new Error("Backup database was not found.");
     }
@@ -3910,17 +3899,9 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       return null;
     }
   }
-  async readRestoreBackupFile() {
-    const restorePath = this.settings.restoreBackupFilePath.trim();
-    if (!restorePath) {
-      return null;
-    }
-    if (this.looksLikeDirectoryPath(restorePath)) {
-      throw new Error("Restore backup file must be a SQLite file path, not a directory.");
-    }
-    const resolvedPath = this.resolveConfiguredBackupPath(restorePath);
+  async readBackupFile(targetPath) {
     try {
-      const data = await import_promises.default.readFile(resolvedPath);
+      const data = await import_promises.default.readFile(targetPath);
       return new Uint8Array(data);
     } catch {
       return null;
@@ -4022,13 +4003,11 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       const raw = await import_promises.default.readFile(this.getRecoveryStatePath(), "utf8");
       const parsed = JSON.parse(raw);
       return {
-        backupDbPath: typeof parsed.backupDbPath === "string" ? parsed.backupDbPath : "",
-        restoreBackupFilePath: typeof parsed.restoreBackupFilePath === "string" ? parsed.restoreBackupFilePath : ""
+        backupDbPath: typeof parsed.backupDbPath === "string" ? parsed.backupDbPath : ""
       };
     } catch {
       return {
-        backupDbPath: "",
-        restoreBackupFilePath: ""
+        backupDbPath: ""
       };
     }
   }

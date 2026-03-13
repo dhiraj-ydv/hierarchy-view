@@ -46,13 +46,11 @@ interface SqlJsModule {
 interface TreeHierarchySettings {
 	dbFileName: string;
 	backupDbPath: string;
-	restoreBackupFilePath: string;
 	noteRootFolder: string;
 }
 
 interface RecoveryState {
 	backupDbPath: string;
-	restoreBackupFilePath: string;
 }
 
 interface TreeNodeRecord {
@@ -79,7 +77,6 @@ interface DisplayTreeNode {
 const DEFAULT_SETTINGS: TreeHierarchySettings = {
 	dbFileName: DEFAULT_DB_FILENAME,
 	backupDbPath: "",
-	restoreBackupFilePath: "",
 	noteRootFolder: "",
 };
 
@@ -1579,6 +1576,7 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Restore database")
+			.setDesc("Pick the backup file to restore from.")
 			.addButton((button) =>
 				button.setButtonText("Restore").onClick(() => {
 					fireAndForget(this.handleRestoreBrowse(button.buttonEl), (error) => {
@@ -1616,11 +1614,6 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 
 	private async handleRestoreBrowse(buttonEl: HTMLButtonElement): Promise<void> {
 		buttonEl.blur();
-		const pickedPath = await this.plugin.pickRestoreFilePath();
-		if (!pickedPath) {
-			return;
-		}
-		await this.plugin.updateRestoreBackupFilePath(pickedPath);
 		await this.plugin.restoreFromBackupNow();
 	}
 }
@@ -1708,16 +1701,12 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		if (!this.settings.backupDbPath && recoveryState.backupDbPath) {
 			this.settings.backupDbPath = recoveryState.backupDbPath;
 		}
-		if (!this.settings.restoreBackupFilePath && recoveryState.restoreBackupFilePath) {
-			this.settings.restoreBackupFilePath = recoveryState.restoreBackupFilePath;
-		}
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 		await this.writeRecoveryState({
 			backupDbPath: this.settings.backupDbPath,
-			restoreBackupFilePath: this.settings.restoreBackupFilePath,
 		});
 	}
 
@@ -2026,11 +2015,6 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		await this.saveSettings();
 	}
 
-	async updateRestoreBackupFilePath(value: string): Promise<void> {
-		this.settings.restoreBackupFilePath = value.trim();
-		await this.saveSettings();
-	}
-
 	async pickBackupPath(): Promise<string | null> {
 		const pickedPath = await this.showSystemPathPicker({
 			type: "directory",
@@ -2063,8 +2047,11 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 	}
 
 	async restoreFromBackupNow(): Promise<void> {
-		await this.loadSettings();
-		const backupBytes = await this.readRestoreBackupFile();
+		const pickedPath = await this.pickRestoreFilePath();
+		if (!pickedPath) {
+			throw new Error("Restore cancelled.");
+		}
+		const backupBytes = await this.readBackupFile(pickedPath);
 		if (!backupBytes) {
 			throw new Error("Backup database was not found.");
 		}
@@ -2124,19 +2111,9 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 	}
 
-	async readRestoreBackupFile(): Promise<Uint8Array | null> {
-		const restorePath = this.settings.restoreBackupFilePath.trim();
-		if (!restorePath) {
-			return null;
-		}
-
-		if (this.looksLikeDirectoryPath(restorePath)) {
-			throw new Error("Restore backup file must be a SQLite file path, not a directory.");
-		}
-
-		const resolvedPath = this.resolveConfiguredBackupPath(restorePath);
+	async readBackupFile(targetPath: string): Promise<Uint8Array | null> {
 		try {
-			const data = await fs.readFile(resolvedPath);
+			const data = await fs.readFile(targetPath);
 			return new Uint8Array(data);
 		} catch {
 			return null;
@@ -2260,13 +2237,10 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			const parsed = JSON.parse(raw) as Partial<RecoveryState>;
 			return {
 				backupDbPath: typeof parsed.backupDbPath === "string" ? parsed.backupDbPath : "",
-				restoreBackupFilePath:
-					typeof parsed.restoreBackupFilePath === "string" ? parsed.restoreBackupFilePath : "",
 			};
 		} catch {
 			return {
 				backupDbPath: "",
-				restoreBackupFilePath: "",
 			};
 		}
 	}
