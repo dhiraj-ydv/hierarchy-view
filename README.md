@@ -41,6 +41,8 @@ Optional backup database:
 
 - you can configure a second backup SQLite path in plugin settings
 - the path can be absolute or vault-relative
+- you can give either a file path or a directory path
+- if you give a directory path, the plugin creates or reuses `tree-hierarchy.sqlite` inside it
 - the plugin updates that backup automatically after database saves
 
 Recovery state:

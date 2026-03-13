@@ -3692,7 +3692,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     if (!backupPath) {
       return;
     }
-    const resolvedPath = this.resolveBackupPath(backupPath);
+    const resolvedPath = await this.resolveBackupFilePath(backupPath);
     await import_promises.default.mkdir(import_path.default.dirname(resolvedPath), { recursive: true });
     await import_promises.default.writeFile(resolvedPath, data);
   }
@@ -3701,7 +3701,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     if (!backupPath) {
       return null;
     }
-    const resolvedPath = this.resolveBackupPath(backupPath);
+    const resolvedPath = await this.resolveBackupFilePath(backupPath);
     try {
       const data = await import_promises.default.readFile(resolvedPath);
       return new Uint8Array(data);
@@ -3709,12 +3709,47 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       return null;
     }
   }
-  resolveBackupPath(configuredPath) {
+  async resolveBackupFilePath(configuredPath) {
+    const resolvedPath = this.resolveConfiguredBackupPath(configuredPath);
+    const pathInfo = await this.getPathInfo(resolvedPath);
+    if (pathInfo?.isDirectory) {
+      return import_path.default.join(resolvedPath, DEFAULT_DB_FILENAME);
+    }
+    if (pathInfo?.exists) {
+      return resolvedPath;
+    }
+    if (this.looksLikeDirectoryPath(configuredPath)) {
+      return import_path.default.join(resolvedPath, DEFAULT_DB_FILENAME);
+    }
+    return resolvedPath;
+  }
+  resolveConfiguredBackupPath(configuredPath) {
     if (import_path.default.isAbsolute(configuredPath)) {
       return configuredPath;
     }
     const vaultBasePath = this.getVaultBasePath();
     return import_path.default.resolve(vaultBasePath, configuredPath);
+  }
+  looksLikeDirectoryPath(configuredPath) {
+    const trimmed = configuredPath.trim();
+    if (!trimmed) {
+      return false;
+    }
+    if (trimmed.endsWith("/") || trimmed.endsWith("\\")) {
+      return true;
+    }
+    return import_path.default.extname(trimmed) === "";
+  }
+  async getPathInfo(targetPath) {
+    try {
+      const stat = await import_promises.default.stat(targetPath);
+      return {
+        exists: true,
+        isDirectory: stat.isDirectory()
+      };
+    } catch {
+      return null;
+    }
   }
   getVaultBasePath() {
     const adapter = this.app.vault.adapter;

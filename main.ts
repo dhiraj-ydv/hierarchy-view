@@ -1862,7 +1862,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			return;
 		}
 
-		const resolvedPath = this.resolveBackupPath(backupPath);
+		const resolvedPath = await this.resolveBackupFilePath(backupPath);
 		await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
 		await fs.writeFile(resolvedPath, data);
 	}
@@ -1873,7 +1873,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			return null;
 		}
 
-		const resolvedPath = this.resolveBackupPath(backupPath);
+		const resolvedPath = await this.resolveBackupFilePath(backupPath);
 		try {
 			const data = await fs.readFile(resolvedPath);
 			return new Uint8Array(data);
@@ -1882,13 +1882,50 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 	}
 
-	private resolveBackupPath(configuredPath: string): string {
+	private async resolveBackupFilePath(configuredPath: string): Promise<string> {
+		const resolvedPath = this.resolveConfiguredBackupPath(configuredPath);
+		const pathInfo = await this.getPathInfo(resolvedPath);
+		if (pathInfo?.isDirectory) {
+			return path.join(resolvedPath, DEFAULT_DB_FILENAME);
+		}
+		if (pathInfo?.exists) {
+			return resolvedPath;
+		}
+		if (this.looksLikeDirectoryPath(configuredPath)) {
+			return path.join(resolvedPath, DEFAULT_DB_FILENAME);
+		}
+		return resolvedPath;
+	}
+
+	private resolveConfiguredBackupPath(configuredPath: string): string {
 		if (path.isAbsolute(configuredPath)) {
 			return configuredPath;
 		}
-
 		const vaultBasePath = this.getVaultBasePath();
 		return path.resolve(vaultBasePath, configuredPath);
+	}
+
+	private looksLikeDirectoryPath(configuredPath: string): boolean {
+		const trimmed = configuredPath.trim();
+		if (!trimmed) {
+			return false;
+		}
+		if (trimmed.endsWith("/") || trimmed.endsWith("\\")) {
+			return true;
+		}
+		return path.extname(trimmed) === "";
+	}
+
+	private async getPathInfo(targetPath: string): Promise<{ exists: boolean; isDirectory: boolean } | null> {
+		try {
+			const stat = await fs.stat(targetPath);
+			return {
+				exists: true,
+				isDirectory: stat.isDirectory(),
+			};
+		} catch {
+			return null;
+		}
 	}
 
 	private getVaultBasePath(): string {
