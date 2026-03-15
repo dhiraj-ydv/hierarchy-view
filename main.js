@@ -2811,21 +2811,22 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
       });
       const treeWrapper = container.createDiv({ cls: "tree-hierarchy-tree" });
       treeWrapper.scrollTop = this.treeScrollTop;
+      const treeInner = treeWrapper.createDiv({ cls: "tree-hierarchy-tree-inner" });
       this.registerRootDropZone(treeWrapper);
-      treeWrapper.createDiv({
+      treeInner.createDiv({
         cls: "tree-hierarchy-dropzone",
         text: "Drop here to move to root"
       });
       const tree = this.plugin.getDisplayTree();
       if (tree.length === 0) {
-        treeWrapper.createDiv({
+        treeInner.createDiv({
           cls: "tree-hierarchy-empty",
           text: "No hierarchy yet. Create a group, create a note, or assign an existing vault note."
         });
         return;
       }
       for (const node of tree) {
-        this.renderNode(treeWrapper, node);
+        this.renderNode(treeInner, node);
       }
       window.requestAnimationFrame(() => {
         treeWrapper.scrollTop = this.treeScrollTop;
@@ -2908,21 +2909,21 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
           new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to move node.");
         });
       });
-      const addGroup = actions.createEl("button", { text: "+G" });
+      const addGroup = actions.createEl("button", { text: "Add group" });
       addGroup.addEventListener("click", () => {
         fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
           console.error(error);
           new import_obsidian.Notice("Failed to open create group dialog.");
         });
       });
-      const addNote = actions.createEl("button", { text: "+N" });
+      const addNote = actions.createEl("button", { text: "Add note" });
       addNote.addEventListener("click", () => {
         fireAndForget(this.plugin.openCreateModalForNode("note", node), (error) => {
           console.error(error);
           new import_obsidian.Notice("Failed to open create note dialog.");
         });
       });
-      const addExisting = actions.createEl("button", { text: "+E" });
+      const addExisting = actions.createEl("button", { text: "Add existing" });
       addExisting.addEventListener("click", () => {
         fireAndForget(this.plugin.openAssignExistingModalForNode(node), (error) => {
           console.error(error);
@@ -2938,7 +2939,7 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
     }
     const popupNodeId = node.dbId;
     if (node.type === "note" && node.notePath && popupNodeId !== null && node.parentId !== null) {
-      const rootButton = actions.createEl("button", { text: "To root" });
+      const rootButton = actions.createEl("button", { text: "Move to root" });
       rootButton.addEventListener("click", () => {
         fireAndForget(this.moveNodeToRoot(popupNodeId), (error) => {
           console.error(error);
@@ -3025,7 +3026,7 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
     }
     try {
       await this.plugin.moveDisplayNode(draggedNode, parentId);
-      this.render();
+      await this.render();
     } catch (error) {
       console.error(error);
       new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to move node.");
@@ -3045,7 +3046,7 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
       }
       const targetIndex = position === "before" ? location.index : location.index + 1;
       await this.plugin.moveDisplayNodeToIndex(draggedNode, location.parentId, targetIndex);
-      this.render();
+      await this.render();
     } catch (error) {
       console.error(error);
       new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to reorder node.");
@@ -3141,21 +3142,22 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     });
     const treeWrapper = container.createDiv({ cls: "tree-hierarchy-tree" });
     treeWrapper.scrollTop = this.treeScrollTop;
+    const treeInner = treeWrapper.createDiv({ cls: "tree-hierarchy-tree-inner" });
     this.registerRootDropZone(treeWrapper);
-    treeWrapper.createDiv({
+    treeInner.createDiv({
       cls: "tree-hierarchy-dropzone",
       text: "Drop here to move to root"
     });
     const tree = this.plugin.getDisplayTree();
     if (tree.length === 0) {
-      treeWrapper.createDiv({
+      treeInner.createDiv({
         cls: "tree-hierarchy-empty",
         text: "No hierarchy yet. Create a group, create a note, or assign an existing vault note."
       });
       return;
     }
     for (const node of tree) {
-      this.renderNode(treeWrapper, node);
+      this.renderNode(treeInner, node);
     }
     window.requestAnimationFrame(() => {
       treeWrapper.scrollTop = this.treeScrollTop;
@@ -3202,7 +3204,6 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
       event.preventDefault();
       this.openNodeContextMenu(event, node);
     });
-    const actions = header.createDiv({ cls: "tree-hierarchy-node-actions" });
     if (node.dbId !== null || node.type === "note" && node.notePath) {
       header.addClass("is-drop-target");
       header.addEventListener("dragover", (event) => {
@@ -3230,45 +3231,6 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
           new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to move node.");
         });
       });
-      const addGroup = actions.createEl("button", { text: "+G" });
-      addGroup.addEventListener("click", () => {
-        fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
-          console.error(error);
-          new import_obsidian.Notice("Failed to open create group dialog.");
-        });
-      });
-      const addNote = actions.createEl("button", { text: "+N" });
-      addNote.addEventListener("click", () => {
-        fireAndForget(this.plugin.openCreateModalForNode("note", node), (error) => {
-          console.error(error);
-          new import_obsidian.Notice("Failed to open create note dialog.");
-        });
-      });
-      const addExisting = actions.createEl("button", { text: "+E" });
-      addExisting.addEventListener("click", () => {
-        fireAndForget(this.plugin.openAssignExistingModalForNode(node), (error) => {
-          console.error(error);
-          new import_obsidian.Notice("Failed to open add existing note dialog.");
-        });
-      });
-      if (node.dbId !== null) {
-        const moveNode = actions.createEl("button", { text: "Move" });
-        moveNode.addEventListener("click", () => {
-          new MoveHierarchyNodeModal(this.app, this.plugin, node).open();
-        });
-      }
-    }
-    const viewNodeId = node.dbId;
-    if (node.type === "note" && node.notePath) {
-      if (viewNodeId !== null && node.parentId !== null) {
-        const rootButton = actions.createEl("button", { text: "To root" });
-        rootButton.addEventListener("click", () => {
-          fireAndForget(this.moveNodeToRoot(viewNodeId), (error) => {
-            console.error(error);
-            new import_obsidian.Notice("Failed to move node.");
-          });
-        });
-      }
     }
     const collapseKey = node.dbId ?? this.hashNodeKey(node.key);
     if (node.children.length > 0 && !this.collapsed.has(collapseKey)) {
@@ -3418,6 +3380,52 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
   }
   openNodeContextMenu(event, node) {
     const menu = import_obsidian.Menu.forEvent(event);
+    if (node.dbId !== null || node.type === "note" && node.notePath) {
+      menu.addItem((item) => {
+        item.setTitle("Add child group").onClick(() => {
+          fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+            console.error(error);
+            new import_obsidian.Notice("Failed to open create group dialog.");
+          });
+        });
+      });
+      menu.addItem((item) => {
+        item.setTitle("Add child note").onClick(() => {
+          fireAndForget(this.plugin.openCreateModalForNode("note", node), (error) => {
+            console.error(error);
+            new import_obsidian.Notice("Failed to open create note dialog.");
+          });
+        });
+      });
+      menu.addItem((item) => {
+        item.setTitle("Add existing note").onClick(() => {
+          fireAndForget(this.plugin.openAssignExistingModalForNode(node), (error) => {
+            console.error(error);
+            new import_obsidian.Notice("Failed to open add existing note dialog.");
+          });
+        });
+      });
+      menu.addSeparator();
+    }
+    if (node.dbId !== null) {
+      menu.addItem((item) => {
+        item.setTitle("Move").onClick(() => {
+          new MoveHierarchyNodeModal(this.app, this.plugin, node).open();
+        });
+      });
+    }
+    const viewNodeId = node.dbId;
+    if (node.type === "note" && node.notePath && viewNodeId !== null && node.parentId !== null) {
+      menu.addItem((item) => {
+        item.setTitle("Move to root").onClick(() => {
+          fireAndForget(this.moveNodeToRoot(viewNodeId), (error) => {
+            console.error(error);
+            new import_obsidian.Notice("Failed to move node.");
+          });
+        });
+      });
+    }
+    menu.addSeparator();
     menu.addItem((item) => {
       item.setTitle("Create parent group").onClick(() => {
         new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
@@ -3767,7 +3775,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       if (!(file instanceof import_obsidian.TFile)) {
         throw new Error("Note file no longer exists.");
       }
-      return this.store.ensureTrackedNote(file.basename, file.path);
+      return await this.store.ensureTrackedNote(file.basename, file.path);
     }
     return null;
   }
@@ -3780,7 +3788,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       if (!(file instanceof import_obsidian.TFile)) {
         throw new Error("Note file no longer exists.");
       }
-      return this.store.ensureTrackedNote(file.path, file.path);
+      return await this.store.ensureTrackedNote(file.path, file.path);
     }
     return null;
   }
@@ -4066,7 +4074,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       const result = await dialog.showOpenDialog({
         title: options.title,
         properties: options.type === "directory" ? ["openDirectory", "createDirectory"] : ["openFile"],
-        filters: options.type === "file" ? [{ name: "Sqlite", extensions: ["sqlite", "db"] }] : void 0
+        filters: options.type === "file" ? [{ name: "SQLite", extensions: ["sqlite", "db"] }] : void 0
       });
       if (result.canceled || result.filePaths.length === 0) {
         return null;
@@ -4076,7 +4084,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       return null;
     }
   }
-  async pickPathWithHtmlInput(options) {
+  pickPathWithHtmlInput(options) {
     return new Promise((resolve) => {
       const input = document.createElement("input");
       input.type = "file";

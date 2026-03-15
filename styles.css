@@ -1,18 +1,19 @@
+/* ===== View container — fills whatever space Obsidian gives it ===== */
 .tree-hierarchy-view {
   height: 100%;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 12px;
-  min-width: max-content !important;
-  width: max-content !important;
-  max-width: none !important;
+  overflow: hidden;
 }
 
+/* ===== Toolbar ===== */
 .tree-hierarchy-toolbar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .tree-hierarchy-toolbar button,
@@ -30,13 +31,12 @@
   background: var(--interactive-hover);
 }
 
+/* ===== Tree scroll container — constrained to available width, scrolls ===== */
 .tree-hierarchy-tree {
-  overflow-x: auto !important;
-  overflow-y: auto !important;
-  flex: none !important;
-  min-width: max-content !important;
-  width: max-content !important;
-  max-width: none !important;
+  overflow-x: auto;
+  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;
   border: 1px solid var(--background-modifier-border);
   border-radius: 12px;
   padding: 10px;
@@ -62,19 +62,26 @@
   background: var(--text-muted);
 }
 
+/* ===== Inner wrapper — expands to fit content, triggers horizontal scroll ===== */
+.tree-hierarchy-tree-inner {
+  display: inline-block;
+  min-width: max-content;
+}
+
+/* ===== Node ===== */
 .tree-hierarchy-node {
   margin-left: 0;
   padding-left: 12px;
   border-left: 1px solid var(--background-modifier-border);
   position: relative;
-  min-width: max-content;
+  white-space: nowrap;
 }
 
 .tree-hierarchy-node-children {
   margin-left: 14px;
-  min-width: max-content;
 }
 
+/* ===== Node header row ===== */
 .tree-hierarchy-node-header {
   display: flex;
   align-items: center;
@@ -82,9 +89,7 @@
   padding: 4px 0;
   border-radius: 8px;
   position: relative;
-  min-width: max-content;
-  width: max-content;
-  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .tree-hierarchy-node-header::before {
@@ -95,6 +100,7 @@
   border-top: 1px solid var(--background-modifier-border);
 }
 
+/* ===== Toggle button ===== */
 .tree-hierarchy-node-toggle {
   flex: 0 0 20px;
   width: 20px;
@@ -107,14 +113,12 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  flex-shrink: 0;
 }
 
+/* ===== Label ===== */
 .tree-hierarchy-node-label {
   display: block;
   flex: 0 0 auto;
-  min-width: max-content;
-  align-self: stretch;
   border: 0;
   background: transparent;
   color: var(--text-normal);
@@ -122,20 +126,19 @@
   padding: 0;
   text-align: left;
   white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .tree-hierarchy-node-label.is-note {
   color: var(--text-accent);
 }
 
+/* ===== Actions ===== */
 .tree-hierarchy-node-actions {
   display: inline-flex;
   flex: 0 0 auto;
   gap: 4px;
-  margin-left: auto;
+  margin-left: 8px;
   white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .tree-hierarchy-node-actions button {
@@ -151,6 +154,7 @@
   color: var(--text-normal);
 }
 
+/* ===== Drag & drop states ===== */
 .tree-hierarchy-node-header.is-dragging {
   opacity: 0.45;
 }
@@ -193,6 +197,7 @@
   font-size: 0.95em;
 }
 
+/* ===== Modals ===== */
 .tree-hierarchy-modal {
   display: flex;
   flex-direction: column;
@@ -240,8 +245,10 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
+/* ===== Popup title ===== */
 .tree-hierarchy-popup-title {
   display: flex;
   align-items: center;
@@ -250,6 +257,7 @@
   user-select: none;
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
 }
 
 .tree-hierarchy-popup-title-text {
@@ -274,19 +282,18 @@
   background: var(--interactive-hover);
 }
 
+/* ===== Popup-specific overrides ===== */
 .tree-hierarchy-popup-modal .tree-hierarchy-view {
-  flex: none !important;
+  flex: 1 1 0;
   min-height: 0;
-  min-width: max-content !important;
-  width: max-content !important;
+  overflow: hidden;
 }
 
 .tree-hierarchy-popup-modal .tree-hierarchy-tree {
+  flex: 1 1 0;
   min-height: 0;
-  overflow-x: auto !important;
-  overflow-y: auto !important;
-  min-width: max-content !important;
-  width: max-content !important;
+  overflow-x: auto;
+  overflow-y: auto;
 }
 
 .tree-hierarchy-modal label {
