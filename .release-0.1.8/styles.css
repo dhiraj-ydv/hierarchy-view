@@ -1,0 +1,264 @@
+.tree-hierarchy-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.tree-hierarchy-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tree-hierarchy-toolbar button,
+.tree-hierarchy-modal button {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.tree-hierarchy-toolbar button:hover,
+.tree-hierarchy-modal button:hover {
+  background: var(--interactive-hover);
+}
+
+.tree-hierarchy-tree {
+  overflow: auto;
+  flex: 1;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  padding: 10px;
+  background: var(--background-secondary);
+}
+
+.tree-hierarchy-node {
+  margin-left: 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--background-modifier-border);
+  position: relative;
+}
+
+.tree-hierarchy-node-children {
+  margin-left: 14px;
+}
+
+.tree-hierarchy-node-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+  border-radius: 8px;
+  position: relative;
+  min-width: 0;
+}
+
+.tree-hierarchy-node-header::before {
+  content: "";
+  position: absolute;
+  left: -13px;
+  width: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.tree-hierarchy-node-toggle {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.tree-hierarchy-node-label {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  align-self: stretch;
+  border: 0;
+  background: transparent;
+  color: var(--text-normal);
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-hierarchy-node-label.is-note {
+  color: var(--text-accent);
+}
+
+.tree-hierarchy-node-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.tree-hierarchy-node-actions button {
+  border: 0;
+  border-radius: 6px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.tree-hierarchy-node-actions button:hover {
+  color: var(--text-normal);
+}
+
+.tree-hierarchy-node-header.is-dragging {
+  opacity: 0.45;
+}
+
+.tree-hierarchy-node-header.is-drop-target {
+  transition: background-color 120ms ease, outline-color 120ms ease;
+}
+
+.tree-hierarchy-node-header.is-drop-active {
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  outline: 1px dashed var(--interactive-accent);
+}
+
+.tree-hierarchy-tree.is-root-drop-active,
+.tree-hierarchy-dropzone.is-root-drop-active {
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
+}
+
+.tree-hierarchy-dropzone {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.tree-hierarchy-insert-zone {
+  height: 8px;
+  margin-left: 6px;
+  border-radius: 999px;
+}
+
+.tree-hierarchy-insert-zone.is-drop-active {
+  background: var(--interactive-accent);
+}
+
+.tree-hierarchy-empty {
+  color: var(--text-muted);
+  font-size: 0.95em;
+}
+
+.tree-hierarchy-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tree-hierarchy-popup-modal {
+  align-items: stretch;
+  justify-content: stretch;
+  backdrop-filter: blur(18px) saturate(0.9);
+  -webkit-backdrop-filter: blur(18px) saturate(0.9);
+  background: color-mix(in srgb, var(--background-primary) 28%, transparent);
+}
+
+.tree-hierarchy-popup-modal .modal-container {
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  max-height: 100vh;
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.tree-hierarchy-popup-modal .modal-close-button {
+  display: none;
+}
+
+.tree-hierarchy-popup-modal .modal {
+  position: fixed;
+  inset: 12px;
+  width: auto;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  margin: 0;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tree-hierarchy-popup-modal .modal-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tree-hierarchy-popup-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  user-select: none;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.tree-hierarchy-popup-title-text {
+  font-weight: 600;
+}
+
+.tree-hierarchy-popup-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.tree-hierarchy-popup-controls button {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.tree-hierarchy-popup-controls button:hover {
+  background: var(--interactive-hover);
+}
+
+.tree-hierarchy-popup-modal .tree-hierarchy-view {
+  flex: 1;
+  min-height: 0;
+}
+
+.tree-hierarchy-popup-modal .tree-hierarchy-tree {
+  min-height: 0;
+}
+
+.tree-hierarchy-modal label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tree-hierarchy-modal input,
+.tree-hierarchy-modal select {
+  width: 100%;
+}
