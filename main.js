@@ -2193,6 +2193,16 @@ function toArrayBuffer(data) {
   new Uint8Array(buffer).set(data);
   return buffer;
 }
+function flattenTree(nodes, prefix = "", ancestors = []) {
+  const result = [];
+  for (const node of nodes) {
+    const breadcrumb = prefix ? `${prefix} / ${node.title}` : node.title;
+    result.push({ node, breadcrumb, ancestorDbIds: [...ancestors] });
+    const nextAncestors = node.dbId !== null ? [...ancestors, node.dbId] : [...ancestors];
+    result.push(...flattenTree(node.children, breadcrumb, nextAncestors));
+  }
+  return result;
+}
 var TreeHierarchyStore = class {
   constructor(plugin) {
     this.plugin = plugin;
@@ -2652,44 +2662,20 @@ var AssignExistingNoteModal = class extends import_obsidian.Modal {
     await this.plugin.refreshTreeView();
   }
 };
-var MoveHierarchyNodeModal = class extends import_obsidian.Modal {
+var MoveHierarchyNodeModal = class {
   constructor(app, plugin, node) {
-    super(app);
+    this.app = app;
     this.plugin = plugin;
     this.node = node;
   }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.addClass("tree-hierarchy-modal");
-    this.titleEl.setText(`Move ${this.node.type}`);
+  open() {
     const targets = this.plugin.store.getParentTargets(this.node.dbId ?? void 0);
-    let selectedParent = targets[0]?.id ?? null;
-    const label = contentEl.createEl("label", { text: "Target parent" });
-    const select = label.createEl("select");
-    select.createEl("option", {
-      value: "",
-      text: "Root level"
-    });
-    for (const target of targets) {
-      select.createEl("option", {
-        value: String(target.id),
-        text: target.label
-      });
-    }
-    select.addEventListener("change", () => {
-      selectedParent = select.value ? Number(select.value) : null;
-    });
-    const moveButton = contentEl.createEl("button", { text: "Apply" });
-    moveButton.addEventListener("click", () => {
+    new SearchMoveModal(this.app, targets, (selectedParent) => {
       fireAndForget(this.handleMove(selectedParent), (error) => {
         console.error(error);
         new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to move node.");
       });
-    });
-  }
-  onClose() {
-    this.contentEl.empty();
+    }).open();
   }
   async handleMove(selectedParent) {
     if (this.node.dbId === null && this.node.notePath) {
@@ -2702,7 +2688,6 @@ var MoveHierarchyNodeModal = class extends import_obsidian.Modal {
     } else if (this.node.dbId !== null) {
       await this.plugin.store.moveNode(this.node.dbId, selectedParent);
     }
-    this.close();
     await this.plugin.refreshTreeView();
   }
 };
@@ -2809,6 +2794,11 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
       addRootNoteButton.addEventListener("click", () => {
         new CreateHierarchyItemModal(this.app, this.plugin, "note", null).open();
       });
+      const searchButton = toolbar.createEl("button", { cls: "tree-hierarchy-search-button", attr: { "aria-label": "Search hierarchy" } });
+      searchButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+      searchButton.addEventListener("click", () => {
+        this.plugin.openSearchModal("popup");
+      });
       const treeWrapper = container.createDiv({ cls: "tree-hierarchy-tree" });
       treeWrapper.scrollTop = this.treeScrollTop;
       const treeInner = treeWrapper.createDiv({ cls: "tree-hierarchy-tree-inner" });
@@ -2842,6 +2832,7 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
   }
   renderNode(parentEl, node) {
     const nodeEl = parentEl.createDiv({ cls: "tree-hierarchy-node" });
+    nodeEl.dataset.nodeKey = node.key;
     const beforeDropZone = nodeEl.createDiv({ cls: "tree-hierarchy-insert-zone" });
     this.registerInsertDropZone(beforeDropZone, node, "before");
     const header = nodeEl.createDiv({ cls: "tree-hierarchy-node-header" });
@@ -3102,6 +3093,25 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
     });
     menu.showAtMouseEvent(event);
   }
+  async revealNode(nodeKey, ancestorDbIds) {
+    for (const id of ancestorDbIds) {
+      this.collapsed.delete(id);
+    }
+    await this.render();
+    window.requestAnimationFrame(() => {
+      const target = this.contentEl.querySelector(`[data-node-key="${nodeKey}"]`);
+      if (target instanceof HTMLElement) {
+        const header = target.querySelector(".tree-hierarchy-node-header");
+        if (header instanceof HTMLElement) {
+          header.scrollIntoView({ behavior: "smooth", block: "center" });
+          header.addClass("is-search-highlight");
+          window.setTimeout(() => {
+            header.removeClass("is-search-highlight");
+          }, 2e3);
+        }
+      }
+    });
+  }
 };
 var TreeHierarchyView = class extends import_obsidian.ItemView {
   constructor(leaf, plugin) {
@@ -3140,6 +3150,11 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     addRootNoteButton.addEventListener("click", () => {
       new CreateHierarchyItemModal(this.app, this.plugin, "note", null).open();
     });
+    const searchButton = toolbar.createEl("button", { cls: "tree-hierarchy-search-button", attr: { "aria-label": "Search hierarchy" } });
+    searchButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+    searchButton.addEventListener("click", () => {
+      this.plugin.openSearchModal("sidebar");
+    });
     const treeWrapper = container.createDiv({ cls: "tree-hierarchy-tree" });
     treeWrapper.scrollTop = this.treeScrollTop;
     const treeInner = treeWrapper.createDiv({ cls: "tree-hierarchy-tree-inner" });
@@ -3165,6 +3180,7 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
   }
   renderNode(parentEl, node) {
     const nodeEl = parentEl.createDiv({ cls: "tree-hierarchy-node" });
+    nodeEl.dataset.nodeKey = node.key;
     const beforeDropZone = nodeEl.createDiv({ cls: "tree-hierarchy-insert-zone" });
     this.registerInsertDropZone(beforeDropZone, node, "before");
     const header = nodeEl.createDiv({ cls: "tree-hierarchy-node-header" });
@@ -3438,6 +3454,76 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     });
     menu.showAtMouseEvent(event);
   }
+  revealNode(nodeKey, ancestorDbIds) {
+    for (const id of ancestorDbIds) {
+      this.collapsed.delete(id);
+    }
+    this.render();
+    window.requestAnimationFrame(() => {
+      const target = this.contentEl.querySelector(`[data-node-key="${nodeKey}"]`);
+      if (target instanceof HTMLElement) {
+        const header = target.querySelector(".tree-hierarchy-node-header");
+        if (header instanceof HTMLElement) {
+          header.scrollIntoView({ behavior: "smooth", block: "center" });
+          header.addClass("is-search-highlight");
+          window.setTimeout(() => {
+            header.removeClass("is-search-highlight");
+          }, 2e3);
+        }
+      }
+    });
+  }
+};
+var SearchHierarchyModal = class extends import_obsidian.SuggestModal {
+  constructor(app, plugin, source) {
+    super(app);
+    this.plugin = plugin;
+    this.source = source;
+    this.allNodes = [];
+    this.setPlaceholder("Search hierarchy...");
+    this.allNodes = flattenTree(this.plugin.getDisplayTree());
+  }
+  getSuggestions(query) {
+    if (!query.trim()) {
+      return this.allNodes;
+    }
+    const lower = query.toLowerCase();
+    return this.allNodes.filter((item) => item.breadcrumb.toLowerCase().includes(lower));
+  }
+  renderSuggestion(item, el) {
+    const wrapper = el.createDiv({ cls: "tree-hierarchy-search-suggestion" });
+    const icon = item.node.type === "note" ? "\u{1F4C4}" : "\u{1F4C1}";
+    wrapper.createSpan({ cls: "tree-hierarchy-search-icon", text: icon });
+    const textWrapper = wrapper.createDiv({ cls: "tree-hierarchy-search-text" });
+    textWrapper.createDiv({ cls: "tree-hierarchy-search-title", text: item.node.title });
+    if (item.breadcrumb !== item.node.title) {
+      textWrapper.createDiv({ cls: "tree-hierarchy-search-breadcrumb", text: item.breadcrumb });
+    }
+  }
+  onChooseSuggestion(item) {
+    this.plugin.revealNodeInView(item.node.key, item.ancestorDbIds, this.source);
+  }
+};
+var SearchMoveModal = class extends import_obsidian.SuggestModal {
+  constructor(app, targets, onSelect) {
+    super(app);
+    this.setPlaceholder("Search target parent...");
+    this.allTargets = [{ id: null, label: "Root level" }, ...targets];
+    this.onSelect = onSelect;
+  }
+  getSuggestions(query) {
+    if (!query.trim()) {
+      return this.allTargets;
+    }
+    const lower = query.toLowerCase();
+    return this.allTargets.filter((item) => item.label.toLowerCase().includes(lower));
+  }
+  renderSuggestion(item, el) {
+    el.createDiv({ cls: "tree-hierarchy-search-suggestion", text: item.label });
+  }
+  onChooseSuggestion(item) {
+    this.onSelect(item.id);
+  }
 };
 var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -3567,6 +3653,13 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
           console.error(error);
           new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to restore backup.");
         });
+      }
+    });
+    this.addCommand({
+      id: "search-hierarchy",
+      name: "Search hierarchy",
+      callback: () => {
+        this.openSearchModal("sidebar");
       }
     });
     this.addSettingTab(new TreeHierarchySettingTab(this.app, this));
@@ -3808,6 +3901,23 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     }
     this.popupModal = new TreeHierarchyPopupModal(this.app, this);
     this.popupModal.open();
+  }
+  openSearchModal(source) {
+    new SearchHierarchyModal(this.app, this, source).open();
+  }
+  revealNodeInView(nodeKey, ancestorDbIds, source) {
+    if (source === "popup" && this.popupModal) {
+      fireAndForget(this.popupModal.revealNode(nodeKey, ancestorDbIds), (error) => {
+        console.error("Failed to reveal node in popup", error);
+      });
+    } else {
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_TREE_HIERARCHY)) {
+        const view = leaf.view;
+        if (view instanceof TreeHierarchyView) {
+          view.revealNode(nodeKey, ancestorDbIds);
+        }
+      }
+    }
   }
   async whenReady() {
     if (this.startupPromise) {

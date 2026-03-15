@@ -306,3 +306,68 @@
 .tree-hierarchy-modal select {
   width: 100%;
 }
+
+/* ===== Search button in toolbar ===== */
+.tree-hierarchy-search-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+}
+
+.tree-hierarchy-search-button svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+}
+
+/* ===== Search highlight animation ===== */
+.is-search-highlight {
+  background: color-mix(in srgb, var(--interactive-accent) 28%, transparent);
+  border-radius: 6px;
+  animation: search-highlight-fade 2s ease-out forwards;
+}
+
+@keyframes search-highlight-fade {
+  0% {
+    background: color-mix(in srgb, var(--interactive-accent) 28%, transparent);
+  }
+  70% {
+    background: color-mix(in srgb, var(--interactive-accent) 28%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* ===== Search suggestion items ===== */
+.tree-hierarchy-search-suggestion {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.tree-hierarchy-search-icon {
+  flex: 0 0 auto;
+  font-size: 1em;
+  line-height: 1.4;
+}
+
+.tree-hierarchy-search-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tree-hierarchy-search-title {
+  font-weight: 500;
+}
+
+.tree-hierarchy-search-breadcrumb {
+  font-size: 0.82em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
