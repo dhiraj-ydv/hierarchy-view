@@ -5,7 +5,7 @@
 The plugin is designed for users who want:
 
 - a custom hierarchy independent from physical vault folders
-- nested groups and nested notes
+- nested labels and nested notes
 - manual ordering and drag-and-drop arrangement
 - a tree UI inside Obsidian for browsing and organizing notes
 
@@ -21,7 +21,7 @@ The SQLite database stores:
 - parent/child relationships
 - manual sibling ordering
 - note references by vault path
-- custom group nodes created in the plugin
+- custom label nodes created in the plugin
 
 The note text itself stays in your Obsidian files.
 
@@ -54,9 +54,9 @@ Recovery state:
 
 ## Main capabilities
 
-- Shows a tree of notes and groups inside Obsidian
-- Supports root items, nested groups, and nested notes
-- Supports note-under-note nesting, not only group-under-note or note-under-group
+- Shows a tree of notes and labels inside Obsidian
+- Supports root items, nested labels, and nested notes
+- Supports note-under-note nesting, not only label-under-note or note-under-label
 - Lets you create notes directly from the hierarchy UI
 - Lets you add existing vault notes into the hierarchy
 - Supports drag-and-drop reordering and reparenting
@@ -94,11 +94,11 @@ Each node can expose actions depending on its type and state.
 
 Common actions:
 
-- `+G`: create child group
+- `+G`: create child label
 - `+N`: create child note
 - `+E`: attach an existing note under that node
 - `Move`: move the node to another parent
-- right-click a node: create a parent group or parent note above that node
+- right-click a node: create a parent label or parent note above that node
 
 Note-specific behavior:
 
@@ -247,7 +247,7 @@ Important columns:
 
 - `id`: primary key
 - `parent_id`: parent node id or `NULL`
-- `type`: `group` or `note`
+- `type`: `label` or `note`
 - `title`: display label shown in the tree
 - `note_path`: vault path for note nodes
 - `sort_order`: persisted manual ordering among siblings

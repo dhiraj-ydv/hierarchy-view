@@ -18,8 +18,9 @@ import initSqlJs from "sql.js";
 
 const VIEW_TYPE_TREE_HIERARCHY = "sqlite-tree-hierarchy-view";
 const DEFAULT_DB_FILENAME = "tree-hierarchy.sqlite";
+const SUPPORTED_NOTE_EXTENSIONS = new Set([".md", ".html", ".htm"]);
 
-type NodeType = "group" | "note";
+type NodeType = "label" | "note";
 type SqlValue = number | string | Uint8Array | null;
 
 interface SqlQueryResult {
@@ -74,6 +75,7 @@ interface DisplayTreeNode {
 	notePath: string | null;
 	children: DisplayTreeNode[];
 	isAssigned: boolean;
+	aliasCount: number;
 }
 
 const DEFAULT_SETTINGS: TreeHierarchySettings = {
@@ -159,7 +161,7 @@ class TreeHierarchyStore {
 			CREATE TABLE IF NOT EXISTS nodes (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				parent_id INTEGER NULL REFERENCES nodes(id) ON DELETE CASCADE,
-				type TEXT NOT NULL CHECK(type IN ('group', 'note')),
+				type TEXT NOT NULL CHECK(type IN ('label', 'note')),
 				title TEXT NOT NULL,
 				note_path TEXT NULL,
 				sort_order INTEGER NOT NULL DEFAULT 0,
@@ -175,6 +177,33 @@ class TreeHierarchyStore {
 			SET sort_order = id
 			WHERE sort_order = 0;
 		`);
+		this.migrateGroupToLabel();
+	}
+
+	private migrateGroupToLabel(): void {
+		const result = this.db?.exec(`SELECT COUNT(*) FROM nodes WHERE type = 'group';`);
+		const count = result?.[0]?.values?.[0]?.[0];
+		if (typeof count === "number" && count > 0) {
+			this.db?.exec(`
+				CREATE TABLE nodes_new (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					parent_id INTEGER NULL REFERENCES nodes_new(id) ON DELETE CASCADE,
+					type TEXT NOT NULL CHECK(type IN ('label', 'note')),
+					title TEXT NOT NULL,
+					note_path TEXT NULL,
+					sort_order INTEGER NOT NULL DEFAULT 0,
+					created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+					updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+				);
+				INSERT INTO nodes_new (id, parent_id, type, title, note_path, sort_order, created_at, updated_at)
+				SELECT id, parent_id,
+					CASE WHEN type = 'group' THEN 'label' ELSE type END,
+					title, note_path, sort_order, created_at, updated_at
+				FROM nodes;
+				DROP TABLE nodes;
+				ALTER TABLE nodes_new RENAME TO nodes;
+			`);
+		}
 	}
 
 	async save(): Promise<void> {
@@ -273,8 +302,8 @@ class TreeHierarchyStore {
 		return roots;
 	}
 
-	async createGroup(title: string, parentId: number | null): Promise<number> {
-		const createdId = this.runInsert("group", title, parentId, null);
+	async createLabel(title: string, parentId: number | null): Promise<number> {
+		const createdId = this.runInsert("label", title, parentId, null);
 		await this.save();
 		return createdId;
 	}
@@ -317,7 +346,11 @@ class TreeHierarchyStore {
 	}
 
 	async syncVaultNotes(): Promise<void> {
-		for (const file of this.plugin.app.vault.getMarkdownFiles()) {
+		const allFiles = this.plugin.app.vault.getFiles().filter((file) => {
+			const ext = file.extension ? `.${file.extension}` : "";
+			return SUPPORTED_NOTE_EXTENSIONS.has(ext);
+		});
+		for (const file of allFiles) {
 			const existingNodeId = this.findNoteNodeIdByPath(file.path);
 			if (existingNodeId === null) {
 				this.runInsert("note", file.path, null, file.path);
@@ -342,6 +375,49 @@ class TreeHierarchyStore {
 		await this.moveNodeToIndex(nodeId, null, null);
 	}
 
+	async createNoteAlias(notePath: string, title: string, parentId: number | null): Promise<number> {
+		const createdId = this.runInsert("note", title, parentId, notePath);
+		await this.save();
+		return createdId;
+	}
+
+	async removeNode(nodeId: number): Promise<void> {
+		if (!this.db) {
+			return;
+		}
+		const node = this.getNodeById(nodeId);
+		if (!node) {
+			return;
+		}
+		const parentId = node.parentId;
+		this.db.run(`DELETE FROM nodes WHERE id = ?`, [nodeId]);
+		this.rewriteSiblingOrder(parentId, this.getSiblingIds(parentId));
+		await this.save();
+	}
+
+	getNotePathCounts(): Map<string, number> {
+		const counts = new Map<string, number>();
+		if (!this.db) {
+			return counts;
+		}
+		const result = this.db.exec(`
+			SELECT note_path, COUNT(*) as cnt
+			FROM nodes
+			WHERE type = 'note' AND note_path IS NOT NULL
+			GROUP BY note_path
+			HAVING COUNT(*) > 1
+		`) ?? [];
+		if (result.length === 0) {
+			return counts;
+		}
+		for (const row of result[0].values) {
+			const notePath = String(row[0]);
+			const count = Number(row[1]);
+			counts.set(notePath, count);
+		}
+		return counts;
+	}
+
 	async moveNode(nodeId: number, parentId: number | null): Promise<void> {
 		await this.moveNodeToIndex(nodeId, parentId, null);
 	}
@@ -355,7 +431,7 @@ class TreeHierarchyStore {
 
 		if (parentId !== null) {
 			const target = this.getNodeById(parentId);
-			if (!target || target.type !== "group") {
+			if (!target || target.type !== "label") {
 				if (target?.type !== "note") {
 					throw new Error("Target parent must be an existing node.");
 				}
@@ -552,10 +628,10 @@ class CreateHierarchyItemModal extends Modal {
 		contentEl.empty();
 		contentEl.addClass("tree-hierarchy-modal");
 
-		this.titleEl.setText(this.type === "group" ? "Create hierarchy group" : "Create note");
+		this.titleEl.setText(this.type === "label" ? "Create label" : "Create note");
 
 		let title = "";
-		const titleLabel = contentEl.createEl("label", { text: this.type === "group" ? "Group name" : "Note title" });
+		const titleLabel = contentEl.createEl("label", { text: this.type === "label" ? "Label name" : "Note title" });
 		const titleInput = titleLabel.createEl("input", { type: "text" });
 		titleInput.focus();
 		titleInput.addEventListener("input", () => {
@@ -572,7 +648,7 @@ class CreateHierarchyItemModal extends Modal {
 		}
 
 		const createButton = contentEl.createEl("button", {
-			text: this.type === "group" ? "Create group" : "Create note",
+			text: this.type === "label" ? "Create label" : "Create note",
 		});
 		createButton.addEventListener("click", () => {
 			fireAndForget(this.handleCreate(title, folder), (error) => {
@@ -592,8 +668,8 @@ class CreateHierarchyItemModal extends Modal {
 			return;
 		}
 
-		if (this.type === "group") {
-			await this.plugin.store.createGroup(title, this.parentId);
+		if (this.type === "label") {
+			await this.plugin.store.createLabel(title, this.parentId);
 		} else {
 			await this.plugin.createNoteInHierarchy(title, this.parentId, folder);
 		}
@@ -711,11 +787,11 @@ class CreateParentHierarchyItemModal extends Modal {
 		contentEl.empty();
 		contentEl.addClass("tree-hierarchy-modal");
 
-		this.titleEl.setText(this.type === "group" ? "Create parent group" : "Create parent note");
+		this.titleEl.setText(this.type === "label" ? "Create parent label" : "Create parent note");
 
 		let title = "";
 		const titleLabel = contentEl.createEl("label", {
-			text: this.type === "group" ? "Parent group name" : "Parent note title",
+			text: this.type === "label" ? "Parent label name" : "Parent note title",
 		});
 		const titleInput = titleLabel.createEl("input", { type: "text" });
 		titleInput.focus();
@@ -733,7 +809,7 @@ class CreateParentHierarchyItemModal extends Modal {
 		}
 
 		const createButton = contentEl.createEl("button", {
-			text: this.type === "group" ? "Create parent group" : "Create parent note",
+			text: this.type === "label" ? "Create parent label" : "Create parent note",
 		});
 		createButton.addEventListener("click", () => {
 			fireAndForget(this.handleCreate(title, folder), (error) => {
@@ -809,9 +885,9 @@ class TreeHierarchyPopupModal extends Modal {
 			container.addClass("tree-hierarchy-view");
 
 			const toolbar = container.createDiv({ cls: "tree-hierarchy-toolbar" });
-			const addRootGroupButton = toolbar.createEl("button", { text: "New root group" });
-			addRootGroupButton.addEventListener("click", () => {
-				new CreateHierarchyItemModal(this.app, this.plugin, "group", null).open();
+			const addRootLabelButton = toolbar.createEl("button", { text: "New root label" });
+			addRootLabelButton.addEventListener("click", () => {
+				new CreateHierarchyItemModal(this.app, this.plugin, "label", null).open();
 			});
 
 			const addRootNoteButton = toolbar.createEl("button", { text: "New root note" });
@@ -838,7 +914,7 @@ class TreeHierarchyPopupModal extends Modal {
 		if (tree.length === 0) {
 			treeInner.createDiv({
 				cls: "tree-hierarchy-empty",
-				text: "No hierarchy yet. Create a group, create a note, or assign an existing vault note.",
+				text: "No hierarchy yet. Create a label, create a note, or assign an existing vault note.",
 			});
 			return;
 		}
@@ -900,6 +976,12 @@ class TreeHierarchyPopupModal extends Modal {
 		label.addEventListener("click", () => {
 			fireAndForget(this.openNodeFile(node));
 		});
+		if (node.aliasCount > 1) {
+			header.createSpan({
+				cls: "tree-hierarchy-alias-badge",
+				text: `\u00D7${node.aliasCount}`,
+			});
+		}
 		header.addEventListener("contextmenu", (event) => {
 			event.preventDefault();
 			this.openNodeContextMenu(event, node);
@@ -933,11 +1015,11 @@ class TreeHierarchyPopupModal extends Modal {
 					new Notice(error instanceof Error ? error.message : "Failed to move node.");
 				});
 			});
-			const addGroup = actions.createEl("button", { text: "Add group" });
-			addGroup.addEventListener("click", () => {
-				fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+			const addLabel = actions.createEl("button", { text: "Add label" });
+			addLabel.addEventListener("click", () => {
+				fireAndForget(this.plugin.openCreateModalForNode("label", node), (error) => {
 					console.error(error);
-					new Notice("Failed to open create group dialog.");
+					new Notice("Failed to open create label dialog.");
 				});
 			});
 
@@ -1144,8 +1226,8 @@ class TreeHierarchyPopupModal extends Modal {
 	private openNodeContextMenu(event: MouseEvent, node: DisplayTreeNode): void {
 		const menu = Menu.forEvent(event);
 		menu.addItem((item) => {
-			item.setTitle("Create parent group").onClick(() => {
-				new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
+			item.setTitle("Create parent label").onClick(() => {
+				new CreateParentHierarchyItemModal(this.app, this.plugin, "label", node).open();
 			});
 		});
 		menu.addItem((item) => {
@@ -1153,6 +1235,22 @@ class TreeHierarchyPopupModal extends Modal {
 				new CreateParentHierarchyItemModal(this.app, this.plugin, "note", node).open();
 			});
 		});
+		if (node.type === "note" && node.notePath && node.dbId !== null) {
+			menu.addSeparator();
+			menu.addItem((item) => {
+				item.setTitle("Add as alias elsewhere").onClick(() => {
+					this.plugin.openAddAliasModal(node);
+				});
+			});
+			menu.addItem((item) => {
+				item.setTitle("Remove from hierarchy").onClick(() => {
+					fireAndForget(this.plugin.removeNodeFromHierarchy(node.dbId as number), (error) => {
+						console.error(error);
+						new Notice(error instanceof Error ? error.message : "Failed to remove node.");
+					});
+				});
+			});
+		}
 		menu.showAtMouseEvent(event);
 	}
 
@@ -1212,9 +1310,9 @@ class TreeHierarchyView extends ItemView {
 		container.addClass("tree-hierarchy-view");
 
 		const toolbar = container.createDiv({ cls: "tree-hierarchy-toolbar" });
-		const addRootGroupButton = toolbar.createEl("button", { text: "New root group" });
-		addRootGroupButton.addEventListener("click", () => {
-			new CreateHierarchyItemModal(this.app, this.plugin, "group", null).open();
+		const addRootLabelButton = toolbar.createEl("button", { text: "New root label" });
+		addRootLabelButton.addEventListener("click", () => {
+			new CreateHierarchyItemModal(this.app, this.plugin, "label", null).open();
 		});
 
 		const addRootNoteButton = toolbar.createEl("button", { text: "New root note" });
@@ -1241,7 +1339,7 @@ class TreeHierarchyView extends ItemView {
 		if (tree.length === 0) {
 			treeInner.createDiv({
 				cls: "tree-hierarchy-empty",
-				text: "No hierarchy yet. Create a group, create a note, or assign an existing vault note.",
+				text: "No hierarchy yet. Create a label, create a note, or assign an existing vault note.",
 			});
 			return;
 		}
@@ -1295,6 +1393,12 @@ class TreeHierarchyView extends ItemView {
 		label.addEventListener("click", () => {
 			fireAndForget(this.openNodeFile(node));
 		});
+		if (node.aliasCount > 1) {
+			header.createSpan({
+				cls: "tree-hierarchy-alias-badge",
+				text: `\u00D7${node.aliasCount}`,
+			});
+		}
 		header.addEventListener("contextmenu", (event) => {
 			event.preventDefault();
 			this.openNodeContextMenu(event, node);
@@ -1505,10 +1609,10 @@ class TreeHierarchyView extends ItemView {
 
 		if (node.dbId !== null || (node.type === "note" && node.notePath)) {
 			menu.addItem((item) => {
-				item.setTitle("Add child group").onClick(() => {
-					fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+				item.setTitle("Add child label").onClick(() => {
+					fireAndForget(this.plugin.openCreateModalForNode("label", node), (error) => {
 						console.error(error);
-						new Notice("Failed to open create group dialog.");
+						new Notice("Failed to open create label dialog.");
 					});
 				});
 			});
@@ -1551,10 +1655,27 @@ class TreeHierarchyView extends ItemView {
 			});
 		}
 
+		if (node.type === "note" && node.notePath && node.dbId !== null) {
+			menu.addSeparator();
+			menu.addItem((item) => {
+				item.setTitle("Add as alias elsewhere").onClick(() => {
+					this.plugin.openAddAliasModal(node);
+				});
+			});
+			menu.addItem((item) => {
+				item.setTitle("Remove from hierarchy").onClick(() => {
+					fireAndForget(this.plugin.removeNodeFromHierarchy(node.dbId as number), (error) => {
+						console.error(error);
+						new Notice(error instanceof Error ? error.message : "Failed to remove node.");
+					});
+				});
+			});
+		}
+
 		menu.addSeparator();
 		menu.addItem((item) => {
-			item.setTitle("Create parent group").onClick(() => {
-				new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
+			item.setTitle("Create parent label").onClick(() => {
+				new CreateParentHierarchyItemModal(this.app, this.plugin, "label", node).open();
 			});
 		});
 		menu.addItem((item) => {
@@ -1730,6 +1851,7 @@ class TreeHierarchySettingTab extends PluginSettingTab {
 				dropdown
 					.addOption(".md", "Markdown (.md)")
 					.addOption(".html", "HTML (.html)")
+					.addOption(".htm", "HTML (.htm)")
 					.setValue(this.plugin.settings.noteExtension)
 					.onChange((value) => {
 						fireAndForget(this.plugin.updateNoteExtension(value), (error) => {
@@ -1934,7 +2056,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		const extension = this.settings.noteExtension || ".md";
 		const notePath = normalizedFolder ? `${normalizedFolder}/${safeTitle}${extension}` : `${safeTitle}${extension}`;
 		const uniquePath = this.getAvailableNotePath(notePath, extension);
-		const fileContent = extension === ".html" 
+		const fileContent = extension === ".html" || extension === ".htm"
 			? `<!DOCTYPE html>\n<html>\n<head>\n<title>${title}</title>\n</head>\n<body>\n<h1>${title}</h1>\n</body>\n</html>`
 			: `# ${title}\n`;
 		const file = await this.app.vault.create(uniquePath, fileContent);
@@ -1960,8 +2082,8 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 
 		const newParentId =
-			type === "group"
-				? await this.store.createGroup(title, location.parentId)
+			type === "label"
+				? await this.store.createLabel(title, location.parentId)
 				: await this.createNoteInHierarchy(title, location.parentId, folder);
 
 		const refreshedLocation = this.findNodeLocation(targetNode.key);
@@ -2001,7 +2123,8 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 
 	getDisplayTree(): DisplayTreeNode[] {
 		const storedTree = this.store.getTree();
-		return this.mapStoredNodes(storedTree);
+		const notePathCounts = this.store.getNotePathCounts();
+		return this.mapStoredNodes(storedTree, notePathCounts);
 	}
 
 	findDisplayNodeByKey(targetKey: string): DisplayTreeNode | null {
@@ -2122,6 +2245,31 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		new SearchHierarchyModal(this.app, this, source).open();
 	}
 
+	openAddAliasModal(node: DisplayTreeNode): void {
+		const targets = this.store.getParentTargets(node.dbId ?? undefined);
+		new SearchMoveModal(this.app, targets, (selectedParent: number | null) => {
+			if (!node.notePath) {
+				return;
+			}
+			fireAndForget(this.createAliasAtTarget(node.notePath, node.title, selectedParent), (error) => {
+				console.error(error);
+				new Notice(error instanceof Error ? error.message : "Failed to create alias.");
+			});
+		}).open();
+	}
+
+	private async createAliasAtTarget(notePath: string, title: string, parentId: number | null): Promise<void> {
+		await this.store.createNoteAlias(notePath, title, parentId);
+		await this.refreshTreeView();
+		new Notice("Alias created.");
+	}
+
+	async removeNodeFromHierarchy(nodeId: number): Promise<void> {
+		await this.store.removeNode(nodeId);
+		await this.refreshTreeView();
+		new Notice("Removed from hierarchy.");
+	}
+
 	revealNodeInView(nodeKey: string, ancestorDbIds: number[], source: "sidebar" | "popup"): void {
 		if (source === "popup" && this.popupModal) {
 			fireAndForget(this.popupModal.revealNode(nodeKey, ancestorDbIds), (error) => {
@@ -2149,7 +2297,7 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 		}
 	}
 
-	private mapStoredNodes(nodes: TreeNodeRecord[]): DisplayTreeNode[] {
+	private mapStoredNodes(nodes: TreeNodeRecord[], notePathCounts: Map<string, number>): DisplayTreeNode[] {
 		return nodes.map((node) => ({
 			key: `db:${node.id}`,
 			dbId: node.id,
@@ -2157,8 +2305,9 @@ export default class SQLiteTreeHierarchyPlugin extends Plugin {
 			type: node.type,
 			title: node.title,
 			notePath: node.notePath,
-			children: this.mapStoredNodes(node.children),
+			children: this.mapStoredNodes(node.children, notePathCounts),
 			isAssigned: true,
+			aliasCount: node.notePath ? (notePathCounts.get(node.notePath) ?? 0) : 0,
 		}));
 	}
 

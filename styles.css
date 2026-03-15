@@ -371,3 +371,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.tree-hierarchy-alias-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  font-size: 0.75em;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background-color: var(--background-modifier-hover);
+  border-radius: 8px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}

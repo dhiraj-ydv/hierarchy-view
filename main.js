@@ -2173,6 +2173,7 @@ var import_path = __toESM(require("path"));
 var import_sql = __toESM(require_sql_wasm_browser());
 var VIEW_TYPE_TREE_HIERARCHY = "sqlite-tree-hierarchy-view";
 var DEFAULT_DB_FILENAME = "tree-hierarchy.sqlite";
+var SUPPORTED_NOTE_EXTENSIONS = /* @__PURE__ */ new Set([".md", ".html", ".htm"]);
 var DEFAULT_SETTINGS = {
   dbFileName: DEFAULT_DB_FILENAME,
   backupDbPath: "",
@@ -2236,7 +2237,7 @@ var TreeHierarchyStore = class {
 			CREATE TABLE IF NOT EXISTS nodes (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				parent_id INTEGER NULL REFERENCES nodes(id) ON DELETE CASCADE,
-				type TEXT NOT NULL CHECK(type IN ('group', 'note')),
+				type TEXT NOT NULL CHECK(type IN ('label', 'note')),
 				title TEXT NOT NULL,
 				note_path TEXT NULL,
 				sort_order INTEGER NOT NULL DEFAULT 0,
@@ -2252,6 +2253,32 @@ var TreeHierarchyStore = class {
 			SET sort_order = id
 			WHERE sort_order = 0;
 		`);
+    this.migrateGroupToLabel();
+  }
+  migrateGroupToLabel() {
+    const result = this.db?.exec(`SELECT COUNT(*) FROM nodes WHERE type = 'group';`);
+    const count = result?.[0]?.values?.[0]?.[0];
+    if (typeof count === "number" && count > 0) {
+      this.db?.exec(`
+				CREATE TABLE nodes_new (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					parent_id INTEGER NULL REFERENCES nodes_new(id) ON DELETE CASCADE,
+					type TEXT NOT NULL CHECK(type IN ('label', 'note')),
+					title TEXT NOT NULL,
+					note_path TEXT NULL,
+					sort_order INTEGER NOT NULL DEFAULT 0,
+					created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+					updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+				);
+				INSERT INTO nodes_new (id, parent_id, type, title, note_path, sort_order, created_at, updated_at)
+				SELECT id, parent_id,
+					CASE WHEN type = 'group' THEN 'label' ELSE type END,
+					title, note_path, sort_order, created_at, updated_at
+				FROM nodes;
+				DROP TABLE nodes;
+				ALTER TABLE nodes_new RENAME TO nodes;
+			`);
+    }
   }
   async save() {
     if (!this.db) {
@@ -2323,8 +2350,8 @@ var TreeHierarchyStore = class {
     }
     return roots;
   }
-  async createGroup(title, parentId) {
-    const createdId = this.runInsert("group", title, parentId, null);
+  async createLabel(title, parentId) {
+    const createdId = this.runInsert("label", title, parentId, null);
     await this.save();
     return createdId;
   }
@@ -2362,7 +2389,11 @@ var TreeHierarchyStore = class {
     return createdId;
   }
   async syncVaultNotes() {
-    for (const file of this.plugin.app.vault.getMarkdownFiles()) {
+    const allFiles = this.plugin.app.vault.getFiles().filter((file) => {
+      const ext = file.extension ? `.${file.extension}` : "";
+      return SUPPORTED_NOTE_EXTENSIONS.has(ext);
+    });
+    for (const file of allFiles) {
       const existingNodeId = this.findNoteNodeIdByPath(file.path);
       if (existingNodeId === null) {
         this.runInsert("note", file.path, null, file.path);
@@ -2384,6 +2415,46 @@ var TreeHierarchyStore = class {
     }
     await this.moveNodeToIndex(nodeId, null, null);
   }
+  async createNoteAlias(notePath, title, parentId) {
+    const createdId = this.runInsert("note", title, parentId, notePath);
+    await this.save();
+    return createdId;
+  }
+  async removeNode(nodeId) {
+    if (!this.db) {
+      return;
+    }
+    const node = this.getNodeById(nodeId);
+    if (!node) {
+      return;
+    }
+    const parentId = node.parentId;
+    this.db.run(`DELETE FROM nodes WHERE id = ?`, [nodeId]);
+    this.rewriteSiblingOrder(parentId, this.getSiblingIds(parentId));
+    await this.save();
+  }
+  getNotePathCounts() {
+    const counts = /* @__PURE__ */ new Map();
+    if (!this.db) {
+      return counts;
+    }
+    const result = this.db.exec(`
+			SELECT note_path, COUNT(*) as cnt
+			FROM nodes
+			WHERE type = 'note' AND note_path IS NOT NULL
+			GROUP BY note_path
+			HAVING COUNT(*) > 1
+		`) ?? [];
+    if (result.length === 0) {
+      return counts;
+    }
+    for (const row of result[0].values) {
+      const notePath = String(row[0]);
+      const count = Number(row[1]);
+      counts.set(notePath, count);
+    }
+    return counts;
+  }
   async moveNode(nodeId, parentId) {
     await this.moveNodeToIndex(nodeId, parentId, null);
   }
@@ -2395,7 +2466,7 @@ var TreeHierarchyStore = class {
     const previousParentId = node.parentId;
     if (parentId !== null) {
       const target = this.getNodeById(parentId);
-      if (!target || target.type !== "group") {
+      if (!target || target.type !== "label") {
         if (target?.type !== "note") {
           throw new Error("Target parent must be an existing node.");
         }
@@ -2569,9 +2640,9 @@ var CreateHierarchyItemModal = class extends import_obsidian.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("tree-hierarchy-modal");
-    this.titleEl.setText(this.type === "group" ? "Create hierarchy group" : "Create note");
+    this.titleEl.setText(this.type === "label" ? "Create label" : "Create note");
     let title = "";
-    const titleLabel = contentEl.createEl("label", { text: this.type === "group" ? "Group name" : "Note title" });
+    const titleLabel = contentEl.createEl("label", { text: this.type === "label" ? "Label name" : "Note title" });
     const titleInput = titleLabel.createEl("input", { type: "text" });
     titleInput.focus();
     titleInput.addEventListener("input", () => {
@@ -2586,7 +2657,7 @@ var CreateHierarchyItemModal = class extends import_obsidian.Modal {
       });
     }
     const createButton = contentEl.createEl("button", {
-      text: this.type === "group" ? "Create group" : "Create note"
+      text: this.type === "label" ? "Create label" : "Create note"
     });
     createButton.addEventListener("click", () => {
       fireAndForget(this.handleCreate(title, folder), (error) => {
@@ -2603,8 +2674,8 @@ var CreateHierarchyItemModal = class extends import_obsidian.Modal {
       new import_obsidian.Notice("Title is required.");
       return;
     }
-    if (this.type === "group") {
-      await this.plugin.store.createGroup(title, this.parentId);
+    if (this.type === "label") {
+      await this.plugin.store.createLabel(title, this.parentId);
     } else {
       await this.plugin.createNoteInHierarchy(title, this.parentId, folder);
     }
@@ -2702,10 +2773,10 @@ var CreateParentHierarchyItemModal = class extends import_obsidian.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("tree-hierarchy-modal");
-    this.titleEl.setText(this.type === "group" ? "Create parent group" : "Create parent note");
+    this.titleEl.setText(this.type === "label" ? "Create parent label" : "Create parent note");
     let title = "";
     const titleLabel = contentEl.createEl("label", {
-      text: this.type === "group" ? "Parent group name" : "Parent note title"
+      text: this.type === "label" ? "Parent label name" : "Parent note title"
     });
     const titleInput = titleLabel.createEl("input", { type: "text" });
     titleInput.focus();
@@ -2721,7 +2792,7 @@ var CreateParentHierarchyItemModal = class extends import_obsidian.Modal {
       });
     }
     const createButton = contentEl.createEl("button", {
-      text: this.type === "group" ? "Create parent group" : "Create parent note"
+      text: this.type === "label" ? "Create parent label" : "Create parent note"
     });
     createButton.addEventListener("click", () => {
       fireAndForget(this.handleCreate(title, folder), (error) => {
@@ -2786,9 +2857,9 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
       container.empty();
       container.addClass("tree-hierarchy-view");
       const toolbar = container.createDiv({ cls: "tree-hierarchy-toolbar" });
-      const addRootGroupButton = toolbar.createEl("button", { text: "New root group" });
-      addRootGroupButton.addEventListener("click", () => {
-        new CreateHierarchyItemModal(this.app, this.plugin, "group", null).open();
+      const addRootLabelButton = toolbar.createEl("button", { text: "New root label" });
+      addRootLabelButton.addEventListener("click", () => {
+        new CreateHierarchyItemModal(this.app, this.plugin, "label", null).open();
       });
       const addRootNoteButton = toolbar.createEl("button", { text: "New root note" });
       addRootNoteButton.addEventListener("click", () => {
@@ -2811,7 +2882,7 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
       if (tree.length === 0) {
         treeInner.createDiv({
           cls: "tree-hierarchy-empty",
-          text: "No hierarchy yet. Create a group, create a note, or assign an existing vault note."
+          text: "No hierarchy yet. Create a label, create a note, or assign an existing vault note."
         });
         return;
       }
@@ -2868,6 +2939,12 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
     label.addEventListener("click", () => {
       fireAndForget(this.openNodeFile(node));
     });
+    if (node.aliasCount > 1) {
+      header.createSpan({
+        cls: "tree-hierarchy-alias-badge",
+        text: `\xD7${node.aliasCount}`
+      });
+    }
     header.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       this.openNodeContextMenu(event, node);
@@ -2900,11 +2977,11 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
           new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to move node.");
         });
       });
-      const addGroup = actions.createEl("button", { text: "Add group" });
-      addGroup.addEventListener("click", () => {
-        fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+      const addLabel = actions.createEl("button", { text: "Add label" });
+      addLabel.addEventListener("click", () => {
+        fireAndForget(this.plugin.openCreateModalForNode("label", node), (error) => {
           console.error(error);
-          new import_obsidian.Notice("Failed to open create group dialog.");
+          new import_obsidian.Notice("Failed to open create label dialog.");
         });
       });
       const addNote = actions.createEl("button", { text: "Add note" });
@@ -3082,8 +3159,8 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
   openNodeContextMenu(event, node) {
     const menu = import_obsidian.Menu.forEvent(event);
     menu.addItem((item) => {
-      item.setTitle("Create parent group").onClick(() => {
-        new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
+      item.setTitle("Create parent label").onClick(() => {
+        new CreateParentHierarchyItemModal(this.app, this.plugin, "label", node).open();
       });
     });
     menu.addItem((item) => {
@@ -3091,6 +3168,22 @@ var TreeHierarchyPopupModal = class extends import_obsidian.Modal {
         new CreateParentHierarchyItemModal(this.app, this.plugin, "note", node).open();
       });
     });
+    if (node.type === "note" && node.notePath && node.dbId !== null) {
+      menu.addSeparator();
+      menu.addItem((item) => {
+        item.setTitle("Add as alias elsewhere").onClick(() => {
+          this.plugin.openAddAliasModal(node);
+        });
+      });
+      menu.addItem((item) => {
+        item.setTitle("Remove from hierarchy").onClick(() => {
+          fireAndForget(this.plugin.removeNodeFromHierarchy(node.dbId), (error) => {
+            console.error(error);
+            new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to remove node.");
+          });
+        });
+      });
+    }
     menu.showAtMouseEvent(event);
   }
   async revealNode(nodeKey, ancestorDbIds) {
@@ -3142,9 +3235,9 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     container.empty();
     container.addClass("tree-hierarchy-view");
     const toolbar = container.createDiv({ cls: "tree-hierarchy-toolbar" });
-    const addRootGroupButton = toolbar.createEl("button", { text: "New root group" });
-    addRootGroupButton.addEventListener("click", () => {
-      new CreateHierarchyItemModal(this.app, this.plugin, "group", null).open();
+    const addRootLabelButton = toolbar.createEl("button", { text: "New root label" });
+    addRootLabelButton.addEventListener("click", () => {
+      new CreateHierarchyItemModal(this.app, this.plugin, "label", null).open();
     });
     const addRootNoteButton = toolbar.createEl("button", { text: "New root note" });
     addRootNoteButton.addEventListener("click", () => {
@@ -3167,7 +3260,7 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     if (tree.length === 0) {
       treeInner.createDiv({
         cls: "tree-hierarchy-empty",
-        text: "No hierarchy yet. Create a group, create a note, or assign an existing vault note."
+        text: "No hierarchy yet. Create a label, create a note, or assign an existing vault note."
       });
       return;
     }
@@ -3216,6 +3309,12 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     label.addEventListener("click", () => {
       fireAndForget(this.openNodeFile(node));
     });
+    if (node.aliasCount > 1) {
+      header.createSpan({
+        cls: "tree-hierarchy-alias-badge",
+        text: `\xD7${node.aliasCount}`
+      });
+    }
     header.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       this.openNodeContextMenu(event, node);
@@ -3398,10 +3497,10 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
     const menu = import_obsidian.Menu.forEvent(event);
     if (node.dbId !== null || node.type === "note" && node.notePath) {
       menu.addItem((item) => {
-        item.setTitle("Add child group").onClick(() => {
-          fireAndForget(this.plugin.openCreateModalForNode("group", node), (error) => {
+        item.setTitle("Add child label").onClick(() => {
+          fireAndForget(this.plugin.openCreateModalForNode("label", node), (error) => {
             console.error(error);
-            new import_obsidian.Notice("Failed to open create group dialog.");
+            new import_obsidian.Notice("Failed to open create label dialog.");
           });
         });
       });
@@ -3441,10 +3540,26 @@ var TreeHierarchyView = class extends import_obsidian.ItemView {
         });
       });
     }
+    if (node.type === "note" && node.notePath && node.dbId !== null) {
+      menu.addSeparator();
+      menu.addItem((item) => {
+        item.setTitle("Add as alias elsewhere").onClick(() => {
+          this.plugin.openAddAliasModal(node);
+        });
+      });
+      menu.addItem((item) => {
+        item.setTitle("Remove from hierarchy").onClick(() => {
+          fireAndForget(this.plugin.removeNodeFromHierarchy(node.dbId), (error) => {
+            console.error(error);
+            new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to remove node.");
+          });
+        });
+      });
+    }
     menu.addSeparator();
     menu.addItem((item) => {
-      item.setTitle("Create parent group").onClick(() => {
-        new CreateParentHierarchyItemModal(this.app, this.plugin, "group", node).open();
+      item.setTitle("Create parent label").onClick(() => {
+        new CreateParentHierarchyItemModal(this.app, this.plugin, "label", node).open();
       });
     });
     menu.addItem((item) => {
@@ -3570,7 +3685,7 @@ var TreeHierarchySettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     new import_obsidian.Setting(containerEl).setName("Note file format").setDesc("File extension for notes created from the hierarchy.").addDropdown(
-      (dropdown) => dropdown.addOption(".md", "Markdown (.md)").addOption(".html", "HTML (.html)").setValue(this.plugin.settings.noteExtension).onChange((value) => {
+      (dropdown) => dropdown.addOption(".md", "Markdown (.md)").addOption(".html", "HTML (.html)").addOption(".htm", "HTML (.htm)").setValue(this.plugin.settings.noteExtension).onChange((value) => {
         fireAndForget(this.plugin.updateNoteExtension(value), (error) => {
           console.error(error);
           new import_obsidian.Notice("Failed to save note file format.");
@@ -3748,7 +3863,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     const extension = this.settings.noteExtension || ".md";
     const notePath = normalizedFolder ? `${normalizedFolder}/${safeTitle}${extension}` : `${safeTitle}${extension}`;
     const uniquePath = this.getAvailableNotePath(notePath, extension);
-    const fileContent = extension === ".html" ? `<!DOCTYPE html>
+    const fileContent = extension === ".html" || extension === ".htm" ? `<!DOCTYPE html>
 <html>
 <head>
 <title>${title}</title>
@@ -3772,7 +3887,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
     if (targetNodeId === null) {
       throw new Error("Could not resolve the target node.");
     }
-    const newParentId = type === "group" ? await this.store.createGroup(title, location.parentId) : await this.createNoteInHierarchy(title, location.parentId, folder);
+    const newParentId = type === "label" ? await this.store.createLabel(title, location.parentId) : await this.createNoteInHierarchy(title, location.parentId, folder);
     const refreshedLocation = this.findNodeLocation(targetNode.key);
     if (!refreshedLocation) {
       throw new Error("Could not refresh the target node location.");
@@ -3805,7 +3920,8 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
   }
   getDisplayTree() {
     const storedTree = this.store.getTree();
-    return this.mapStoredNodes(storedTree);
+    const notePathCounts = this.store.getNotePathCounts();
+    return this.mapStoredNodes(storedTree, notePathCounts);
   }
   findDisplayNodeByKey(targetKey) {
     const walk = (nodes) => {
@@ -3905,6 +4021,28 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
   openSearchModal(source) {
     new SearchHierarchyModal(this.app, this, source).open();
   }
+  openAddAliasModal(node) {
+    const targets = this.store.getParentTargets(node.dbId ?? void 0);
+    new SearchMoveModal(this.app, targets, (selectedParent) => {
+      if (!node.notePath) {
+        return;
+      }
+      fireAndForget(this.createAliasAtTarget(node.notePath, node.title, selectedParent), (error) => {
+        console.error(error);
+        new import_obsidian.Notice(error instanceof Error ? error.message : "Failed to create alias.");
+      });
+    }).open();
+  }
+  async createAliasAtTarget(notePath, title, parentId) {
+    await this.store.createNoteAlias(notePath, title, parentId);
+    await this.refreshTreeView();
+    new import_obsidian.Notice("Alias created.");
+  }
+  async removeNodeFromHierarchy(nodeId) {
+    await this.store.removeNode(nodeId);
+    await this.refreshTreeView();
+    new import_obsidian.Notice("Removed from hierarchy.");
+  }
   revealNodeInView(nodeKey, ancestorDbIds, source) {
     if (source === "popup" && this.popupModal) {
       fireAndForget(this.popupModal.revealNode(nodeKey, ancestorDbIds), (error) => {
@@ -3929,7 +4067,7 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       this.popupModal = null;
     }
   }
-  mapStoredNodes(nodes) {
+  mapStoredNodes(nodes, notePathCounts) {
     return nodes.map((node) => ({
       key: `db:${node.id}`,
       dbId: node.id,
@@ -3937,8 +4075,9 @@ var SQLiteTreeHierarchyPlugin = class extends import_obsidian.Plugin {
       type: node.type,
       title: node.title,
       notePath: node.notePath,
-      children: this.mapStoredNodes(node.children),
-      isAssigned: true
+      children: this.mapStoredNodes(node.children, notePathCounts),
+      isAssigned: true,
+      aliasCount: node.notePath ? notePathCounts.get(node.notePath) ?? 0 : 0
     }));
   }
   getDatabaseDirectory() {
